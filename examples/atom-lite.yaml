@@ -1,0 +1,9 @@
+# Local checkout: copy secrets.example.yaml to secrets.yaml and replace every value.
+# For remote installation, see README.md.
+substitutions:
+  device_name: powertech-gate
+  friendly_name: Powertech Gate
+  gate_lock_entity: lock.gate_lock
+packages:
+  controller: !include ../packages/powertech-gate.yaml
+  model: !include ../packages/models/ps19001.yaml

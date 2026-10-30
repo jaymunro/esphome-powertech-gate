@@ -1,0 +1,21 @@
+import importlib.util,json,unittest
+from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]
+spec=importlib.util.spec_from_file_location('generate',ROOT/'tools/generate.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+class Profiles(unittest.TestCase):
+ def setUp(self): self.p=json.loads((ROOT/'models/ps19001.json').read_text())
+ def test_profiles(self):
+  for path in (ROOT/'models').glob('*.json'): module.validate(json.loads(path.read_text()))
+ def test_rejects_unsupported_protocol(self):
+  self.p['protocol']='uart_v2'
+  with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_bad_threshold(self):
+  self.p['full_open_min_position']=101
+  with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_unvalidated_fields(self):
+  self.p['arbitrary_uart_command']='FACTORY DEFAULT'
+  with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_boolean_threshold(self):
+  self.p['closed_position']=False
+  with self.assertRaises(ValueError): module.validate(self.p)
+if __name__=='__main__': unittest.main()

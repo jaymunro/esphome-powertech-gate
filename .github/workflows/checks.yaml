@@ -1,0 +1,19 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python tools/generate.py --check
+      - run: python -m unittest discover -s tests -p 'test_*.py'
+      - run: c++ -std=c++17 -Wall -Wextra tests/test_gate_feedback.cpp -o /tmp/feedback && /tmp/feedback
+      - run: c++ -std=c++17 -Wall -Wextra tests/test_gate_client.cpp -o /tmp/client && /tmp/client
+      - run: pip install esphome==2026.10.1
+      - run: cp examples/secrets.example.yaml examples/secrets.yaml
+      - run: esphome config examples/atom-lite.yaml

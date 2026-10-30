@@ -1,0 +1,9 @@
+secrets.yaml
+**/secrets.yaml
+.esphome/
+**/.esphome/
+__pycache__/
+*.bin
+*.elf
+*.log
+.DS_Store

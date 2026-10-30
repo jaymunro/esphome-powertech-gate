@@ -1,0 +1,582 @@
+substitutions:
+  device_name: powertech-gate
+  friendly_name: Powertech Gate
+  gate_ble_pin: !secret gate_ble_pin
+  gate_ble_mac: !secret gate_ble_mac
+  gate_ble_name: !secret gate_ble_name
+  gate_lock_entity: lock.gate_lock
+  require_gate_unlock: "true"
+
+esphome:
+  includes:
+    - <esphome/components/md5/md5.h>
+    - <esphome/core/alloc_helpers.h>
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.10.1
+  project:
+    name: powertech.eyeopen_gate
+    version: "0.7.0"
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+@@CONTROLLER_SOURCE@@
+          auto *client = new EyeOpenClient();
+          id(gate_ble).register_ble_node(client);
+          id(gate_request) = [client](const std::string &command) { client->request(command); };
+          id(gate_maintenance) = [client]() { client->maintenance(); };
+      - script.execute: gate_scan
+
+esp32:
+  board: m5stack-atom
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  baud_rate: 115200
+  logs:
+    esp32_ble_tracker: WARN
+    sensor: INFO
+    text_sensor: WARN
+
+api:
+  encryption:
+    key: !secret gate_api_key
+
+ota:
+  - platform: esphome
+    password: !secret gate_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+globals:
+  - id: require_gate_unlock
+    type: bool
+    restore_value: false
+    initial_value: '${require_gate_unlock}'
+  - id: gate_device_name
+    type: std::string
+    restore_value: false
+    initial_value: '"${gate_ble_name}"'
+  - id: profile_model
+    type: std::string
+    restore_value: false
+    initial_value: '"${profile_model}"'
+  - id: profile_pedestrian_status
+    type: std::string
+    restore_value: false
+    initial_value: '"${profile_pedestrian_status}"'
+  - id: profile_full_open_min
+    type: int
+    restore_value: false
+    initial_value: '${profile_full_open_min}'
+  - id: profile_closed_position
+    type: int
+    restore_value: false
+    initial_value: '${profile_closed_position}'
+  - id: profile_supports_pedestrian
+    type: bool
+    restore_value: false
+    initial_value: '${profile_supports_pedestrian}'
+  - id: gate_listening
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: c004_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: capture_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: capture_records
+    type: std::vector<std::string>
+    restore_value: false
+  - id: gate_pin
+    type: std::string
+    restore_value: false
+    initial_value: '"${gate_ble_pin}"'
+  - id: control_session
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: gate_request
+    type: std::function<void(const std::string &)>
+    restore_value: false
+  - id: monitor_enabled
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+  - id: gate_maintenance
+    type: std::function<void()>
+    restore_value: false
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: if (id(gate_maintenance)) id(gate_maintenance)();
+
+switch:
+  - platform: template
+    name: Bluetooth monitoring
+    id: monitor_switch
+    entity_category: config
+    lambda: return id(monitor_enabled);
+    turn_on_action:
+      - lambda: |-
+          id(monitor_enabled) = true;
+          if (!id(control_session) && id(gate_request)) id(gate_request)("READ STATUS");
+    turn_off_action:
+      - lambda: |-
+          id(monitor_enabled) = false;
+          if (id(gate_request)) id(gate_request)("DISCONNECT");
+
+text_sensor:
+  - platform: template
+    name: Bluetooth gate state source
+    id: gate_state_source
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth car state source
+    id: car_state_source
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth pedestrian state source
+    id: pedestrian_state_source
+    update_interval: never
+    entity_category: diagnostic
+  - platform: homeassistant
+    id: gate_lock_state
+    entity_id: ${gate_lock_entity}
+    internal: true
+  - platform: template
+    name: Bluetooth last control result
+    id: control_result
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth polling health
+    id: poll_health
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth command status
+    id: command_status
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth status reply
+    id: status_reply
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth protocol result
+    internal: true
+    id: protocol_result
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Gate candidate
+    internal: true
+    id: gate_candidate
+    update_interval: never
+  - platform: template
+    name: Discovery status
+    internal: true
+    id: discovery_status
+    update_interval: never
+  - platform: template
+    name: BLE inspection status
+    internal: true
+    id: ble_inspection_status
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: BLE service details
+    internal: true
+    id: ble_service_details
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: BLE capture status
+    internal: true
+    id: ble_capture_status
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: Last C004 notification
+    internal: true
+    id: c004_last
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: C004 capture log 1
+    internal: true
+    id: c004_log_1
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: C004 capture log 2
+    internal: true
+    id: c004_log_2
+    update_interval: never
+    entity_category: diagnostic
+  - platform: template
+    name: C004 capture log 3
+    internal: true
+    id: c004_log_3
+    update_interval: never
+    entity_category: diagnostic
+  - platform: ble_client
+    ble_client_id: gate_ble
+    id: c004_receiver
+    internal: true
+    service_uuid: 'A001'
+    characteristic_uuid: 'C004'
+    notify: true
+    update_interval: never
+    on_notify:
+      then:
+        - lambda: |-
+            if (!id(gate_listening)) return;
+            ++id(c004_count);
+            id(c004_packets).publish_state(id(c004_count));
+            std::string hex;
+            char byte[4];
+            const size_t cap = std::min(x.size(), size_t(64));
+            for (size_t i = 0; i < cap; ++i) {
+              snprintf(byte, sizeof(byte), "%02X", uint8_t(x[i]));
+              hex += byte;
+            }
+            id(c004_last).publish_state(hex);
+            std::string printable;
+            for (size_t i = 0; i < std::min(x.size(), size_t(40)); ++i) {
+              const uint8_t c = uint8_t(x[i]);
+              printable += (c >= 32 && c <= 126) ? char(c) : '.';
+            }
+            std::string record = "+" + std::to_string(uint32_t(millis() - id(capture_started_ms))) + "ms " + printable;
+            auto &records = id(capture_records);
+            if (records.size() >= 12) records.erase(records.begin());
+            records.push_back(record);
+            std::string blocks[3];
+            for (size_t i = 0; i < records.size(); ++i) {
+              if (!blocks[i / 4].empty()) blocks[i / 4] += " | ";
+              blocks[i / 4] += records[i];
+            }
+            id(c004_log_1).publish_state(blocks[0].substr(0, 250));
+            id(c004_log_2).publish_state(blocks[1].substr(0, 250));
+            id(c004_log_3).publish_state(blocks[2].substr(0, 250));
+            id(ble_capture_status).publish_state("Receiving C004 notifications");
+            ESP_LOGI("gate_capture", "C004 packet=%u bytes=%u first64hex=%s",
+                     unsigned(id(c004_count)), unsigned(x.size()), hex.c_str());
+
+sensor:
+  - platform: template
+    name: Bluetooth status replies
+    id: status_successes
+    update_interval: never
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: template
+    name: Bluetooth unmatched reply reads
+    id: unmatched_replies
+    update_interval: never
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: wifi_signal
+    name: Wi-Fi signal strength
+    update_interval: 20s
+    entity_category: diagnostic
+  - platform: template
+    name: C004 notifications
+    internal: true
+    id: c004_packets
+    accuracy_decimals: 0
+    update_interval: never
+    entity_category: diagnostic
+  - platform: uptime
+    name: Uptime
+
+binary_sensor:
+  - platform: status
+    name: Status
+  - platform: gpio
+    id: atom_button
+    pin:
+      number: GPIO39
+      inverted: true
+    internal: true
+    on_press:
+      - script.execute: gate_scan
+
+button:
+  - platform: template
+    name: Start gate discovery
+    internal: true
+    on_press:
+      - script.execute: gate_scan
+  - platform: template
+    name: Inspect gate Bluetooth
+    internal: true
+    entity_category: diagnostic
+    on_press:
+      - script.execute: gate_inspect
+  - platform: template
+    name: Listen to gate Bluetooth
+    internal: true
+    entity_category: diagnostic
+    on_press:
+      - script.execute: gate_listen
+  - platform: template
+    name: Query gate over Bluetooth
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("READ STATUS");
+  - platform: template
+    name: Bluetooth car open
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("FULL OPEN");
+  - platform: template
+    name: Bluetooth car close
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("FULL CLOSE");
+  - platform: template
+    name: Bluetooth pedestrian open
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("PED OPEN");
+  - platform: template
+    name: Bluetooth pedestrian close
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("PED CLOSE");
+  - platform: template
+    name: Bluetooth stop
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
+            id(command_status).publish_state("Another Bluetooth test is active; command not sent"); return;
+          }
+          id(gate_request)("STOP");
+  - platform: template
+    name: Disconnect gate Bluetooth
+    internal: true
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (!id(gate_request)) { id(command_status).publish_state("Client not initialized"); return; }
+          id(gate_request)("DISCONNECT");
+
+script:
+  - id: gate_scan
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(control_session);
+          then:
+            - logger.log: "Controller session active; skipping another Bluetooth test."
+            - script.stop: gate_scan
+      - wait_until:
+          condition: ble.enabled
+          timeout: 30s
+      - if:
+          condition: ble.enabled
+          then:
+            - text_sensor.template.publish:
+                id: discovery_status
+                state: "Scanning"
+            - logger.log: "Starting gate advertisement discovery (180 seconds)."
+            - esp32_ble_tracker.start_scan:
+                continuous: false
+          else:
+            - text_sensor.template.publish:
+                id: discovery_status
+                state: "Bluetooth not ready"
+  - id: gate_inspect
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(control_session);
+          then:
+            - logger.log: "Controller session active; skipping another Bluetooth test."
+            - script.stop: gate_inspect
+      - if:
+          condition:
+            lambda: return id(gate_listening);
+          then:
+            - logger.log: "Capture in progress; skipping inspection request."
+            - script.stop: gate_inspect
+      - esp32_ble_tracker.stop_scan:
+      - text_sensor.template.publish:
+          id: ble_inspection_status
+          state: "Connecting"
+      - lambda: |-
+          id(ble_service_details).publish_state("Awaiting discovery");
+          id(gate_ble).connect();
+      - delay: 30s
+      - lambda: |-
+          id(gate_ble).disconnect();
+          if (id(ble_inspection_status).state == "Connecting")
+            id(ble_inspection_status).publish_state("Timed out; disconnect requested");
+  - id: gate_listen
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(control_session);
+          then:
+            - logger.log: "Controller session active; skipping another Bluetooth test."
+            - script.stop: gate_listen
+      - if:
+          condition:
+            lambda: return id(gate_inspect).is_running();
+          then:
+            - logger.log: "Inspection in progress; skipping capture request."
+            - script.stop: gate_listen
+      - esp32_ble_tracker.stop_scan:
+      - lambda: |-
+          id(gate_listening) = true;
+          id(c004_count) = 0;
+          id(capture_started_ms) = millis();
+          id(capture_records).clear();
+          id(c004_log_1).publish_state("No packets");
+          id(c004_log_2).publish_state("");
+          id(c004_log_3).publish_state("");
+          id(c004_packets).publish_state(0);
+          id(c004_last).publish_state("No notification received");
+          id(ble_capture_status).publish_state("Connecting for 120-second listen");
+          id(gate_ble).connect();
+      - delay: 150s
+      - lambda: |-
+          id(gate_ble).disconnect();
+          if (id(gate_listening)) {
+            id(gate_listening) = false;
+            id(ble_capture_status).publish_state("Capture deadline; disconnect requested");
+          }
+
+ble_client:
+  - id: gate_ble
+    mac_address: "${gate_ble_mac}"
+    auto_connect: false
+    on_connect:
+      then:
+        - lambda: |-
+            auto *svc = id(gate_ble).get_service(0xA001);
+            if (svc == nullptr) {
+              id(ble_service_details).publish_state("A001 service not found");
+              id(ble_inspection_status).publish_state("Discovery complete; A001 absent");
+              ESP_LOGI("gate_inspection", "Service discovery complete: A001 absent.");
+              return;
+            }
+            if (!svc->parsed) svc->parse_characteristics();
+            std::string result = "A001:";
+            for (auto *chr : svc->characteristics) {
+              char uuid[40];
+              char info[80];
+              chr->uuid.to_str(uuid);
+              snprintf(info, sizeof(info), " %s:%02X", uuid, unsigned(chr->properties));
+              result += info;
+              ESP_LOGI("gate_inspection", "Characteristic %s handle=%u properties=0x%02X read=%d notify=%d indicate=%d",
+                       uuid, chr->handle, unsigned(chr->properties),
+                       bool(chr->properties & ESP_GATT_CHAR_PROP_BIT_READ),
+                       bool(chr->properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY),
+                       bool(chr->properties & ESP_GATT_CHAR_PROP_BIT_INDICATE));
+            }
+            id(ble_service_details).publish_state(result.substr(0, 250));
+            id(ble_inspection_status).publish_state("Discovery complete");
+        - if:
+            condition:
+              lambda: return !id(control_session);
+            then:
+              - if:
+                  condition:
+                    lambda: return id(gate_listening);
+                  then:
+                    - text_sensor.template.publish:
+                        id: ble_capture_status
+                        state: "Connected; awaiting C004 notifications"
+                    - delay: 120s
+                  else:
+                    - delay: 2s
+              - ble_client.disconnect: gate_ble
+    on_disconnect:
+      then:
+        - lambda: |-
+            if (id(gate_listening)) {
+              id(gate_listening) = false;
+              id(ble_capture_status).publish_state(id(c004_count) > 0 ? "Capture ended; notifications received" : "Capture ended; no notifications");
+            }
+        - logger.log: "Gate BLE disconnected; monitoring reconnects for status only when enabled."
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    continuous: false
+    duration: 180s
+    interval: 320ms
+    window: 30ms
+  on_ble_advertise:
+    then:
+      - lambda: |-
+          const std::string name = x.get_name().c_str();
+          bool candidate = name.rfind("WBT01-", 0) == 0;
+          char uuid_buffer[40];
+          for (const auto &uuid : x.get_service_uuids()) {
+            const std::string value = uuid.to_str(uuid_buffer);
+            if (value.find("a001") != std::string::npos || value.find("A001") != std::string::npos)
+              candidate = true;
+          }
+          if (!candidate) return;
+          static std::map<uint64_t, uint32_t> last_log;
+          const auto address = x.address_uint64();
+          const uint32_t now = millis();
+          if (last_log.count(address) && now - last_log[address] < 5000) return;
+          last_log[address] = now;
+          char address_buffer[18];
+          const std::string value = std::string(x.address_str_to(address_buffer)) + " " + name;
+          ESP_LOGI("gate_discovery", "Candidate %s RSSI=%d", value.c_str(), x.get_rssi());
+          id(gate_candidate).publish_state(value);
+  on_scan_end:
+    then:
+      - text_sensor.template.publish:
+          id: discovery_status
+          state: "Idle"
+      - logger.log: "Gate discovery window finished; press ATOM button to scan again."
