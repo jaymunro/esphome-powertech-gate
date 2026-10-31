@@ -385,7 +385,11 @@ int main() {
   acknowledge(c17,base); assert(settings_write_count()==0); tick(c17,250);
   assert(settings_write_count()==1 && writes.back().payload=="C=WRITE FUNCTION,"+changed.substr(18));
   assert(setting_9.state!="10 sec"); // No optimistic selection.
-  acknowledge(c17,"ACK FUNCTION;src=P9999999"); tick(c17,250);
+  const auto echoed="ACK FUNCTION,"+changed.substr(18);
+  GateSettings expected_write; assert(expected_write.decode(base));
+  assert(EyeOpenClient::matching_ack(echoed,expected_write.auto_close_command(2)));
+  assert(!EyeOpenClient::matching_ack("ACK FUNCTION,"+base.substr(18),expected_write.auto_close_command(2)));
+  acknowledge(c17,echoed); tick(c17,250);
   assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c17,changed);
   assert(setting_9.state=="10 sec" && settings_result.state.find("verified")!=std::string::npos);
@@ -404,6 +408,7 @@ int main() {
   c19.request_auto_close(2); tick(c19,250); acknowledge(c19,base); tick(c19,250);
   event(c19,ESP_GATTC_CLOSE_EVT); clock_ms+=100000; c19.maintenance();
   assert(settings_write_count()==1);
+  assert(settings_result.state.find("uncertain")!=std::string::npos);
   // A Stop or movement event before submission cancels the pending write.
   for(bool stop:{false,true}) {
     reset(); esphome::ble_client::Parent p20; EyeOpenClient c20(false); c20.p=&p20; ready(c20);
@@ -440,6 +445,8 @@ int main() {
   acknowledge(c24,"ACK FUNCTION"); tick(c24,250); acknowledge(c24,"ACK FUNCTION");
   for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
   assert(p24.disconnections==0 && settings_write_count()==1);
+  assert(settings_result.state.find("uncertain")!=std::string::npos);
+  event(c24,ESP_GATTC_CLOSE_EVT);
   assert(settings_result.state.find("uncertain")!=std::string::npos);
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

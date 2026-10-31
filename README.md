@@ -126,6 +126,8 @@ be stale. No HA helpers or MQTT discovery are needed.
 An auto-close change requires a connected, confirmed closed gate. It reads the
 complete configuration afresh, changes only field 9, submits one guarded legacy
 `WRITE FUNCTION` command, waits for `ACK FUNCTION`, then reads back every field.
+P3.6 echoes the full block in `ACK FUNCTION,<fields>`; the acknowledgement must
+match the exact submitted block before readback can complete the transaction.
 The selector displays the controller readback; a mismatch reports actual values
 without retrying the write. Selecting the current value makes no board write.
 Stop or a newly unconfirmed gate can cancel a pending save. A disconnect after
@@ -144,6 +146,8 @@ automatic refresh waits for confirmed Closed and a 500 ms idle gap. A settings
 read receiving unrelated UART replies is abandoned after three reads, leaving
 healthy Bluetooth connected and normal status polling running. An uncertain
 post-write readback is reported explicitly and never resends the write.
+An uncertain outcome survives disconnection messages until a complete fresh
+configuration read establishes the controller's actual values.
 
 The PS19001/P3.6 controller returns `ACK READ FUNCTION,` followed by labeled
 fields. The matcher also accepts the colon separator. The model schema is in

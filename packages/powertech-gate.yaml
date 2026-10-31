@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev5"
+    version: "0.9.0-dev6"
   on_boot:
     priority: -100
     then:
@@ -364,7 +364,8 @@ esphome:
                 ESP_LOGW("gate_link", "Bluetooth closed: reason=%d phase=%d poll_failures=%u",
                          int(param->close.reason), int(phase_), poll_failures_);
                 id(bluetooth_connection).publish_state(false);
-                if(!settings_active) id(settings_result).publish_state("Bluetooth disconnected; values retained from last read");
+                if(settings_uncertain_) id(settings_result).publish_state("Settings outcome uncertain; refresh to verify; write not retried");
+                else if(!settings_active) id(settings_result).publish_state("Bluetooth disconnected; values retained from last read");
                 const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
                 feedback_.disconnected(); publish_feedback();
                 next_reconnect_ = millis() + reconnect_delay_;
@@ -503,8 +504,11 @@ esphome:
             }
             static bool matching_ack(const std::string &reply, const std::string &command) {
               if(command.rfind("WRITE FUNCTION,",0)==0) {
-                const auto line=reply.substr(0,reply.find_first_of("\r\n"));
-                return line=="ACK FUNCTION" || line.rfind("ACK FUNCTION;",0)==0;
+                auto line=reply.substr(0,reply.find_first_of("\r\n"));
+                line=line.substr(0,line.find(';'));
+                // P3.6 echoes the entire written block after a comma. Validate every
+                // echoed byte, so an old/different write cannot acknowledge this save.
+                return line=="ACK FUNCTION" || line=="ACK FUNCTION"+command.substr(14);
               }
               if (command == "READ FUNCTION") { std::string snapshot; return function_reply(reply, snapshot); }
               if (command == "READ STATUS") {
@@ -590,11 +594,12 @@ esphome:
             enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
             EditStage edit_stage_{EDIT_IDLE};
             int desired_auto_close_{-1};
-            bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false};
+            bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false}, settings_uncertain_{false};
             std::string settings_wire_;
             uint32_t last_uart_reply_{0};
             GateSettings edit_baseline_;
             void cancel_settings(const std::string &message) {
+              if(edit_stage_!=EDIT_IDLE && settings_write_sent_) settings_uncertain_=true;
               if(edit_stage_!=EDIT_IDLE) id(settings_result).publish_state(message);
               edit_stage_=EDIT_IDLE; desired_auto_close_=-1; settings_wire_.clear(); settings_write_sent_=false;
             }
@@ -605,6 +610,7 @@ esphome:
                 cancel_settings("Invalid settings snapshot; no further write scheduled");
                 id(settings_result).publish_state("Unrecognized settings values; configuration entities not updated"); return;
               }
+              settings_uncertain_=false; // A complete fresh read establishes actual values.
               // During a write, publish the selector only after verified readback.
               if(edit_stage_!=EDIT_BASELINE) settings.publish();
               if(edit_stage_==EDIT_BASELINE) {
@@ -620,6 +626,7 @@ esphome:
               } else if(edit_stage_==EDIT_VERIFY) {
                 const bool matches=settings.matches_auto_close_change(edit_baseline_,desired_auto_close_);
                 cancel_settings(matches ? "Auto-close saved and complete readback verified" : "Readback mismatch; actual values shown; not retried");
+                settings_uncertain_=false;
               } else id(settings_result).publish_state("Configuration read and validated");
             }
             bool auth_blocked_{false};
