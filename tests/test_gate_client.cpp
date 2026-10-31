@@ -261,5 +261,32 @@ int main() {
   clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
+  // Closed polling is 2s; notifications prompt a read without overlapping GATT requests.
+  reset(); esphome::ble_client::Parent p14; EyeOpenClient c14; c14.p=&p14;
+  c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
+  clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
+  clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
+  const auto idle_writes=writes.size(); tick(c14,1999); assert(writes.size()==idle_writes);
+  tick(c14,1); assert(writes.size()==idle_writes+1);
+  event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpening"); tick(c14,0); assert(writes.size()==idle_writes+1);
+  acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);
+  assert(writes.size()==idle_writes+2 && writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(c14,"ACK STATUS:PED CLOSED,0");
+  const auto fast_writes=writes.size(); tick(c14,499); assert(writes.size()==fast_writes);
+  tick(c14,1); assert(writes.size()==fast_writes+1);
+  // A single user command can wait behind that poll, rather than being lost.
+  c14.request("PED OPEN"); c14.request("FULL OPEN"); assert(writes.size()==fast_writes+1);
+  acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,50);
+  assert(writes.back().payload=="C=PED OPEN;src=P9999999");
+  acknowledge(c14,"ACK PED OPEN"); const auto after_open=writes.size(); tick(c14,0);
+  assert(writes.size()==after_open+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
+  for(const auto &w:writes) assert(w.payload!="C=FULL OPEN;src=P9999999");
+  // The software lock is checked again after a command queued behind a poll.
+  reset(); esphome::ble_client::Parent p15; EyeOpenClient c15; c15.p=&p15;
+  c15.request("READ STATUS"); discover(c15); unlock_without_challenge(c15); acknowledge(c15,"ACK STATUS:PED CLOSED,0");
+  tick(c15,10000); c15.request("PED OPEN"); gate_lock_state.state="locked";
+  acknowledge(c15,"ACK STATUS:PED CLOSED,0"); tick(c15,50);
+  for(const auto &w:writes) assert(w.payload=="C=READ STATUS;src=P9999999");
+  assert(control_result.state.find("lock changed")!=std::string::npos);
   puts("Protocol and transaction checks passed, including unrelated replies, bounded polling/backoff/recovery and preserved movement results (mock Bluetooth/hash). ");
 }

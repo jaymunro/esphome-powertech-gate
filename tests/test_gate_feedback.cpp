@@ -58,5 +58,23 @@ int main() {
  tolerant.accept({"PED CLOSED",2},26000);
  assert(tolerant.accept({"PED CLOSED",2},28000)); assert(tolerant.gate()!="closed");
  tolerant.tick(53001); assert(!tolerant.available());
+ // A bounded local command hint identifies the access mode only after movement.
+ GateFeedback hinted; hinted.connected(0);
+ hinted.accept({"PED CLOSED",0},16000); assert(hinted.accept({"PED CLOSED",0},18000));
+ hinted.commanded_open(true,19000); assert(!hinted.available());
+ assert(!hinted.accept({"PED OPENING",10},19200));
+ assert(hinted.accept({"PED OPENING",30},19800));
+ assert(hinted.pedestrian()=="opening" && hinted.car()=="closed");
+ assert(hinted.accept({"PED OPENING",50},20400)); assert(hinted.pedestrian()=="opening");
+ assert(hinted.accept({"SINGLE STOPPED",25},21000)); assert(hinted.pedestrian()=="open");
+ assert(hinted.accept({"PED CLOSING",10},21600)); assert(hinted.pedestrian()=="closing");
+ assert(!hinted.accept({"PED CLOSED",0},22000)); assert(!hinted.accept({"PED CLOSED",0},22600));
+ assert(hinted.accept({"PED CLOSED",0},23200));
+ hinted.commanded_open(true,24000);
+ hinted.accept({"PED OPENING",10},33000); assert(hinted.accept({"PED OPENING",30},33600));
+ assert(hinted.pedestrian()=="unavailable");  // Expired hints cannot classify transmitter movement.
+ hinted.commanded_open(true,34000); hinted.disconnected(); hinted.connected(35000);
+ hinted.accept({"PED OPENING",10},51000); assert(hinted.accept({"PED OPENING",30},51600));
+ assert(hinted.car()=="unavailable" && hinted.pedestrian()=="unavailable");
  puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and wraparound.");
 }

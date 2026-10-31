@@ -24,7 +24,10 @@ movement buttons are internal and are not advertised to Home Assistant.
 - **Status** (bridge connection) defaults disabled because other entities already
   show Unavailable on an ESP32 disconnect. It can be enabled for diagnostics.
 
-Covers are non-optimistic. A command ACK does not update them. When the access
+Covers are non-optimistic. A command ACK does not report movement. A recent
+acknowledged local opening command can identify the access mode once fresh
+status confirms movement; ambiguous transmitter movement still waits for a
+distinguishing controller state. When the access
 mode is unknown, they retain the last confirmed position and clear the displayed
 movement operation. On boot they have no trustworthy remembered gate position;
 **ignore covers until Gate state is valid**. Unknown access mode during movement

@@ -15,10 +15,15 @@ class GateFeedback {
     linked_ = true; connected_at_ = last_event_ = now; synced_ = false;
     invalidate(); mode_.clear();
   }
-  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); }
+  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; }
   void event(uint32_t now) {
     last_event_ = now; invalidate();  // Query current status; do not replay the event as movement.
   }
+  void commanded_open(bool pedestrian, uint32_t now) {
+    hint_mode_ = pedestrian ? "pedestrian" : "car"; hint_at_=now; hint_pending_=true;
+    event(now);  // A command never establishes movement or an open state.
+  }
+  void clear_command_hint() { hint_pending_=false; }
   void tick(uint32_t now) {
     if (valid_ && uint32_t(now - last_status_) > 25000) { invalidate(); mode_.clear(); }
   }
@@ -28,7 +33,10 @@ class GateFeedback {
     const auto word = s.text.substr(s.text.find_last_of(' ')+1);
     const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
     std::string next_mode = closed ? "closed" : mode_;
-    if (word == "OPENING") next_mode.clear();
+    if (word == "OPENING") {
+      if (last_phase_ != "OPENING") next_mode.clear();
+      if (hint_pending_ && uint32_t(now-hint_at_) < 8000) next_mode=hint_mode_;
+    }
     if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
     else if (!closed && (word == "OPENED" || word == "OPEN") && s.position >= profile_.full_open_min) next_mode = "car";
     // A previous closed mode says nothing about the next opening.
@@ -38,8 +46,10 @@ class GateFeedback {
       candidate_ = key; candidate_at_ = now; valid_ = false;
       physical_ = car_ = pedestrian_ = "unavailable"; return false;
     }
-    if (uint32_t(now-candidate_at_) < 1000) return false;
+    if (uint32_t(now-candidate_at_) < (closed ? 1000u : 500u)) return false;
     valid_ = synced_ = true; last_status_ = now; mode_ = next_mode;
+    last_phase_=word;
+    if (!closed && !next_mode.empty()) hint_pending_=false;
     physical_ = closed ? "closed" : "open";
     car_ = pedestrian_ = "unavailable";
     if (closed) car_ = pedestrian_ = "closed";
@@ -89,6 +99,8 @@ class GateFeedback {
   }
  private:
   Profile profile_;
+  std::string hint_mode_,last_phase_;
+  uint32_t hint_at_{0}; bool hint_pending_{false};
   bool linked_{false},valid_{false},synced_{false};
   uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
   std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};

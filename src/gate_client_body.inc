@@ -35,6 +35,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       if (command == "STOP") {
         urgent_stop_ = true;
         status("Stop queued with priority after the active Bluetooth operation");
+      } else if (background_poll_ && wire_command_ == "READ STATUS" &&
+                 user_command_.empty() && command != "READ STATUS") {
+        user_command_=command;
+        status("Command queued after the in-flight status read");
       } else status("Busy; command was not queued or sent");
       return;
     }
@@ -64,7 +68,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
         status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
       }
-      if (uint32_t(now - last_poll_) >= ((feedback_.available() || poll_failures_ > 0) ? poll_interval_ : uint32_t(2000))) {
+      if ((status_due_ && poll_failures_ == 0) || uint32_t(now - last_poll_) >= poll_delay(now)) {
         busy_ = true; background_poll_ = true; wire_command_ = "READ STATUS"; write_command();
       }
       return;
@@ -127,7 +131,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     if (!id(control_session)) return;
     if (event == ESP_GATTC_NOTIFY_EVT && event_handle_ && param->notify.handle == event_handle_) {
-      feedback_.event(millis()); publish_feedback();
+      feedback_.event(millis()); kick_poll(millis()); publish_feedback();
       return;  // Native C004 receiver retains the diagnostic bytes separately.
     }
     if (event == ESP_GATTC_REG_FOR_NOTIFY_EVT && param->reg_for_notify.handle == result_handle_) {
@@ -181,13 +185,19 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         if (write_confirmed_ && matching_ack(reply, wire_command_)) {
           const auto finished = wire_command_;
           if (finished == "READ STATUS") {
-            last_poll_ = millis(); poll_interval_ = 10000; poll_failures_ = 0; reconnect_delay_ = 15000;
+            last_poll_ = millis(); poll_interval_ = 2000; poll_failures_ = 0; reconnect_delay_ = 15000;
             GateFeedback::Sample sample;
             if (GateFeedback::parse_reply(reply, sample)) feedback_.accept(sample, millis());
             publish_feedback();
             id(poll_health).publish_state("Status reply received");
             id(status_successes).publish_state(++status_successes_);
-          } else id(control_result).publish_state("Acknowledged: " + finished);
+          } else {
+            id(control_result).publish_state("Acknowledged: " + finished);
+            if (finished == "PED OPEN" || finished == "FULL OPEN")
+              feedback_.commanded_open(finished == "PED OPEN", millis());
+            else { feedback_.clear_command_hint(); feedback_.event(millis()); }
+            kick_poll(millis()); publish_feedback();
+          }
           wire_command_.clear();
           status("Acknowledged: " + finished);
           if (urgent_stop_ || !user_command_.empty()) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
@@ -300,7 +310,14 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0};
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
-  uint32_t poll_interval_{10000};
+  uint32_t poll_interval_{2000}, fast_until_{0};
+  bool fast_window_{false}, status_due_{false};
+  void kick_poll(uint32_t now) { fast_window_=true; fast_until_=now+30000; status_due_=true; }
+  uint32_t poll_delay(uint32_t now) {
+    if (poll_failures_) return poll_interval_;
+    if (fast_window_ && due(now,fast_until_)) fast_window_=false;
+    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 2000;
+  }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;
   static bool due(uint32_t now, uint32_t target) { return int32_t(now - target) >= 0; }
@@ -320,7 +337,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
           ": retaining Bluetooth; retrying status only");
       status("Status reply mismatch; no movement command was retried");
       wire_command_.clear(); busy_ = false;
-      if (urgent_stop_) {
+      if (urgent_stop_ || !user_command_.empty()) {
         background_poll_ = false; busy_ = true;
         phase_ = COMMAND_WAIT; deadline_ = millis() + 50; return;
       }
@@ -357,12 +374,17 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       wire_command_ = "READ STATUS"; baseline_needed_ = false;
     } else { wire_command_ = user_command_; user_command_.clear(); }
     if (!allowed(wire_command_)) { fail("Invalid command; nothing sent"); return; }
+    if ((wire_command_ == "PED OPEN" || wire_command_ == "FULL OPEN") &&
+        id(require_gate_unlock) && id(gate_lock_state).state != "unlocked") {
+      id(control_result).publish_state("Not sent: gate lock changed while command was queued");
+      wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED; return;
+    }
     write_command();
   }
   void write_command() {
     phase_ = COMMAND_WRITE; deadline_ = millis() + 4000; write_confirmed_ = false;
     status("Sending: " + wire_command_);
-    if (wire_command_ == "READ STATUS") id(poll_health).publish_state("Requesting status");
+    if (wire_command_ == "READ STATUS") { status_due_=false; id(poll_health).publish_state("Requesting status"); }
     else id(control_result).publish_state("Sending: " + wire_command_);
     if (write(command_handle_, "C=" + wire_command_ + ";src=P9999999") != ESP_OK)
       fail("Could not submit command; no retry scheduled");

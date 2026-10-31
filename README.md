@@ -85,6 +85,26 @@ reliable Wi-Fi connection to Home Assistant. Start with the phone app closed for
 baseline testing, then test coexistence separately. Monitoring can be paused
 before connecting another Bluetooth client.
 
+## Polling and movement feedback
+
+Closed idle polling waits 2 seconds after each reply. While open, unsynchronized,
+or within 30 seconds of a controller event/command, it waits 500 ms instead.
+These are scheduling delays, not guaranteed update rates: GATT/UART response
+latency and bounded mismatch recovery add time. Only one transaction is in flight.
+A notification prompts a fresh status read; it never directly establishes state.
+
+An acknowledged HA opening command supplies an 8-second access-mode hint. It
+cannot report Opening/Open by itself: two subsequent status samples must confirm
+actual movement. The hint is discarded on disconnection or expiry, and explicit
+endpoint status overrides it. Without a recent local command, ambiguous generic
+transmitter opening feedback can still leave the access mode unknown until the
+controller reports a distinguishing state. Closed confirmation still requires
+samples at least 1 second apart; non-closed confirmation uses 500 ms.
+
+One user command can wait behind a background status read, without overlapping
+Bluetooth writes. A second non-Stop command is rejected while that slot is full;
+Stop retains priority and the software lock is rechecked before a queued open.
+
 ## Controller definitions
 
 A definition is a small JSON file under `models/`, with its supported transport,
