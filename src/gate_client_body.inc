@@ -447,6 +447,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
   }
   void publish_feedback() {
+    const float position=feedback_.position();
+    if (position >= 0) {
+      if (id(gate_position).state != position) id(gate_position).publish_state(position);
+    } else if (!std::isnan(id(gate_position).state)) id(gate_position).publish_state(NAN);
     publish_cover(id(car_gate_cover), feedback_.car());
     publish_cover(id(pedestrian_gate_cover), feedback_.pedestrian());
     if (feedback_.gate() == "unavailable") id(gate_state).invalidate_state();

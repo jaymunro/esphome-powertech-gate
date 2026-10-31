@@ -9,6 +9,11 @@ movement buttons are internal and are not advertised to Home Assistant.
 - **Gate state** uses the Opening binary-sensor class: `on` = Open, `off` =
   Closed. Missing, startup-unconfirmed or stale Bluetooth feedback gives **Unknown**;
   losing the ESP32 connection gives **Unavailable**. No reed switch is used.
+- **Gate position** is an enabled diagnostic percentage from the latest valid
+  controller status reply, not an independent leaf-angle measurement. It becomes
+  Unknown after Bluetooth disconnect or 25 seconds without a valid status reply.
+  Values up to 5 count as Closed only alongside explicit CLOSED and repeated
+  fresh confirmation; Closing at those positions still counts as open.
 - **Bluetooth connection** uses the Connectivity class and shows the actual
   GATT link, Connected/Disconnected. Connected does not imply authenticated,
   synchronized or fresh feedback. Consult Gate state for that.

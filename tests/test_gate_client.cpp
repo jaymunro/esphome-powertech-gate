@@ -1,6 +1,7 @@
 // Host-side protocol/state-machine checks. Bluetooth and hashing are test doubles;
 // the real PIN/hash exchange is tested separately on the ATOM, never in this file.
 #include <algorithm>
+#include <cmath>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -38,6 +39,7 @@ int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=
 Text control_result,poll_health,settings_snapshot,settings_result;
 Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;
+Number gate_position;
 Number c004_packets; bool control_session=false,gate_listening=false;
 uint32_t c004_count=0,capture_started_ms=0; std::vector<std::string> capture_records;
 std::string gate_pin="0000";  // Synthetic fixture only.
@@ -112,6 +114,12 @@ size_t settings_write_count() {
   return std::count_if(writes.begin(),writes.end(),[](const Write &w){return w.payload.rfind("C=WRITE FUNCTION,",0)==0;});
 }
 int main() {
+  // Raw position publishes during candidate confirmation and expires independently.
+  reset(); esphome::ble_client::Parent pos_parent; EyeOpenClient pos_client(false); pos_client.p=&pos_parent;
+  ready(pos_client);assert(gate_position.state==0);
+  pos_client.request("READ STATUS");acknowledge(pos_client,"ACK STATUS:PED CLOSING,3");
+  assert(gate_position.state==3);
+  event(pos_client,ESP_GATTC_CLOSE_EVT);assert(std::isnan(gate_position.state));
   assert(EyeOpenClient::allowed("READ FUNCTION"));
   assert(!EyeOpenClient::allowed("WRITE FUNCTION 1:1"));
   assert(!EyeOpenClient::allowed("RP,1"));

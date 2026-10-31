@@ -23,7 +23,7 @@ until your own installation passes the documented checks. UART reply contention
 with EyeOpen/cloud clients is under investigation.
 
 From version 0.8.0, ESPHome publishes two native covers, **Gate state** and a
-**Bluetooth connection** diagnostic. No Home Assistant helpers are required;
+**Bluetooth connection** diagnostic, plus a **Gate position** diagnostic. No Home Assistant helpers are required;
 source sensors and command buttons stay internal to the firmware.
 
 Gate state is an opening-class binary sensor: Open/Closed with fresh feedback,
@@ -34,8 +34,12 @@ or Closing, when feedback is lost or awaiting confirmation. They can therefore
 still display movement after a lost connection until fresh feedback returns;
 they do not independently become unavailable on a Bluetooth failure. Before
 using a cover in an automation, require Gate state to be `on` or `off`.
-PS19001 permits a two-unit closed-position tolerance only with an explicit
-CLOSED status and repeated fresh confirmation. Shared UART reply mismatches
+PS19001 permits a five-unit closed-position tolerance only with an explicit
+CLOSED status and repeated fresh confirmation. CLOSED outside that tolerance makes
+Gate state Unknown rather than falsely refreshing Open. Gate position is the raw
+controller percentage, not an independently measured leaf angle; it becomes
+Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
+Shared UART reply mismatches
 retry status reads after 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
 is automatically retried. A connected Bluetooth link alone does not guarantee

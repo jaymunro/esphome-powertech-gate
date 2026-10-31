@@ -24,6 +24,11 @@ class Profiles(unittest.TestCase):
  def test_rejects_boolean_closed_tolerance(self):
   self.p['closed_position_tolerance']=True
   with self.assertRaises(ValueError): module.validate(self.p)
+ def test_position_diagnostic(self):
+  source=(ROOT/'templates/powertech-gate.yaml.in').read_text()
+  sensor=source.split('name: Gate position',1)[1].split('  - platform:',1)[0]
+  self.assertIn('entity_category: diagnostic',sensor)
+  self.assertNotIn('internal: true',sensor)
  def test_autonomous_package(self):
   source=(ROOT/'templates/powertech-gate.yaml.in').read_text()
   self.assertIn("id: monitor_enabled\n    type: bool\n    restore_value: false\n    initial_value: 'true'",source)

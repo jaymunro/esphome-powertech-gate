@@ -13,9 +13,9 @@ class GateFeedback {
   struct Sample { std::string text; int position{-1}; };
   void connected(uint32_t now) {
     linked_ = true; connected_at_ = last_event_ = now; synced_ = false;
-    invalidate(); mode_.clear();
+    invalidate(); mode_.clear(); position_=-1;
   }
-  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; }
+  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; }
   void event(uint32_t now) {
     last_event_ = now; pending_=true; candidate_.clear();
     // Untimestamped notifications only request confirmation. Preserve a fresh
@@ -28,13 +28,18 @@ class GateFeedback {
   }
   void clear_command_hint() { hint_pending_=false; }
   void tick(uint32_t now) {
+    if (position_ >= 0 && uint32_t(now-last_sample_) > 25000) position_=-1;
     if (valid_ && uint32_t(now - last_status_) > 25000) { invalidate(); mode_.clear(); }
   }
   bool accept(const Sample &s, uint32_t now) {
-    if (!linked_ || uint32_t(now-connected_at_) < 15000 ||
+    if (!linked_) return false;
+    position_=s.position; last_sample_=now;
+    if (uint32_t(now-connected_at_) < 15000 ||
         (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
     const auto word = s.text.substr(s.text.find_last_of(' ')+1);
     const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
+    // A contradictory CLOSED position must never become fresh Open feedback.
+    if (word == "CLOSED" && !closed) { invalidate(); return false; }
     std::string next_mode = closed ? "closed" : mode_;
     if (word == "OPENING") {
       if (last_phase_ != "OPENING") next_mode.clear();
@@ -67,6 +72,7 @@ class GateFeedback {
     }
     return true;
   }
+  int position() const { return position_; }
   bool available() const { return valid_; }
   bool confirmed_closed() const { return valid_ && !pending_ && physical_=="closed"; }
   const std::string &gate() const { return physical_; }
@@ -105,6 +111,7 @@ class GateFeedback {
   }
  private:
   Profile profile_;
+  int position_{-1}; uint32_t last_sample_{0};
   std::string hint_mode_,last_phase_;
   uint32_t hint_at_{0}; bool hint_pending_{false};
   bool linked_{false},valid_{false},synced_{false},pending_{true};

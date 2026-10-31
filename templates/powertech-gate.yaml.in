@@ -11,12 +11,13 @@ esphome:
   includes:
     - <esphome/components/md5/md5.h>
     - <esphome/core/alloc_helpers.h>
+    - <cmath>
   name: ${device_name}
   friendly_name: ${friendly_name}
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.4"
+    version: "0.9.0-alpha.5"
   on_boot:
     priority: -100
     then:
@@ -323,6 +324,15 @@ text_sensor:
                      unsigned(id(c004_count)), unsigned(x.size()), hex.c_str());
 
 sensor:
+  - platform: template
+    name: Gate position
+    id: gate_position
+    update_interval: never
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    icon: mdi:gate
+    entity_category: diagnostic
+
   - platform: template
     name: Bluetooth status replies
     internal: true

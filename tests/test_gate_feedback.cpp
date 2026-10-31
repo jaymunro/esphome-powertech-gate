@@ -56,7 +56,7 @@ int main() {
  assert(tolerant.accept({"PED CLOSING",1},24000));
  assert(tolerant.gate()=="open");
  tolerant.accept({"PED CLOSED",2},26000);
- assert(tolerant.accept({"PED CLOSED",2},28000)); assert(tolerant.gate()!="closed");
+ assert(!tolerant.accept({"PED CLOSED",2},28000)); assert(!tolerant.available());
  tolerant.tick(53001); assert(!tolerant.available());
  // P3.6 also returned CLOSED,2 with both leaves visually confirmed shut.
  GateFeedback confirmed_two({"PS19001", "SINGLE STOPPED", 95, 0, true, 2});
@@ -67,7 +67,42 @@ int main() {
  confirmed_two.accept({"PED CLOSING",0},20000);
  assert(confirmed_two.accept({"PED CLOSING",0},22000) && confirmed_two.gate()=="open");
  confirmed_two.accept({"PED CLOSED",3},24000);
- assert(confirmed_two.accept({"PED CLOSED",3},26000) && confirmed_two.gate()!="closed");
+ assert(!confirmed_two.accept({"PED CLOSED",3},26000) && !confirmed_two.available());
+ // Reproduced after a car cycle: CLOSED,3 is physically shut on PS19001 P3.6.
+ // Exercise both previously known access modes; require explicit CLOSED twice.
+ for (bool pedestrian : {false,true}) {
+  GateFeedback three({"PS19001", "SINGLE STOPPED", 95, 0, true, 3});
+  three.connected(0);
+  three.accept({pedestrian ? "SINGLE STOPPED" : "PED OPENED",pedestrian ? 25 : 100},16000);
+  assert(three.accept({pedestrian ? "SINGLE STOPPED" : "PED OPENED",pedestrian ? 25 : 100},18000));
+  three.accept({"PED CLOSING",3},20000);three.accept({"PED CLOSING",3},21000);
+  assert(three.gate()=="open" && !three.confirmed_closed());
+  assert(!three.accept({"PED CLOSED",3},22000));
+  assert(!three.confirmed_closed() && three.position()==3);
+  assert(three.accept({"PED CLOSED",3},23000));
+  assert(three.confirmed_closed() && three.car()=="closed" && three.pedestrian()=="closed");
+  // Beyond the verified range is Unknown, never fresh Open or secure Closed.
+  assert(!three.accept({"PED CLOSED",4},24000));
+  assert(!three.available() && !three.confirmed_closed() && three.position()==4);
+  three.tick(49001);assert(three.position()==-1);
+  three.accept({"PED OPENING",9},50000);assert(three.position()==9);
+  three.disconnected();assert(three.position()==-1);
+ }
+ // User-selected five-unit tolerance: still require explicit CLOSED twice.
+ for (bool pedestrian : {false,true}) {
+  GateFeedback five({"PS19001", "SINGLE STOPPED", 95, 0, true, 5});five.connected(0);
+  five.accept({pedestrian ? "SINGLE STOPPED" : "PED OPENED",pedestrian ? 25 : 100},16000);
+  five.accept({pedestrian ? "SINGLE STOPPED" : "PED OPENED",pedestrian ? 25 : 100},18000);
+  for (int position : {4,5}) {
+   five.accept({"PED CLOSING",position},20000);five.accept({"PED CLOSING",position},21000);
+   assert(five.gate()=="open" && !five.confirmed_closed());
+   assert(!five.accept({"PED CLOSED",position},22000));
+   assert(!five.confirmed_closed());
+   assert(five.accept({"PED CLOSED",position},23000));
+   assert(five.confirmed_closed() && five.car()=="closed" && five.pedestrian()=="closed");
+  }
+  assert(!five.accept({"PED CLOSED",6},24000));assert(!five.available());
+ }
  // A bounded local command hint identifies the access mode only after movement.
  GateFeedback hinted; hinted.connected(0);
  hinted.accept({"PED CLOSED",0},16000); assert(hinted.accept({"PED CLOSED",0},18000));
