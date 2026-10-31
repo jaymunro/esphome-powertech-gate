@@ -16,7 +16,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.1"
+    version: "0.9.0-alpha.2"
   on_boot:
     priority: -100
     then:
@@ -28,7 +28,13 @@ esphome:
           id(gate_request) = [client](const std::string &command) { client->request(command); };
           id(gate_settings_change) = [client](char field, const std::string &option) { client->request_setting(field, option); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
-      - script.execute: gate_scan
+      - wait_until:
+          condition: ble.enabled
+          timeout: 30s
+      - lambda: |-
+          id(monitor_enabled) = true;
+          ESP_LOGI("gate_link", "Starting continuous monitoring with status only");
+          if (id(gate_request)) id(gate_request)("READ STATUS");
 
 esp32:
   board: m5stack-atom

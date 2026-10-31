@@ -27,6 +27,7 @@ class Profiles(unittest.TestCase):
  def test_autonomous_package(self):
   source=(ROOT/'templates/powertech-gate.yaml.in').read_text()
   self.assertIn("id: monitor_enabled\n    type: bool\n    restore_value: false\n    initial_value: 'true'",source)
+  self.assertIn('Starting continuous monitoring with status only',source)
   self.assertNotIn('id: monitor_switch',source)
   self.assertNotIn('id: read_settings_button',source)
 if __name__=='__main__': unittest.main()
