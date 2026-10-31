@@ -111,43 +111,64 @@ Stop retains priority and the software lock is rechecked before a queued open.
 
 ### Configuration entities (settings-readonly branch)
 
-All 19 PS19001 parameters are native ESPHome configuration entities. Eighteen
-are read-only diagnostic text sensors (Home Assistant disallows Configuration
-category on sensors); **Auto-closing** is a native select with the app's
-Off and timer choices. The select remains unknown at startup until a validated
-controller read arrives; it never restores a presumed setting from flash.
+All 19 PS19001 parameters are editable native ESPHome **Configuration** selects,
+including motor type, current thresholds, speeds, leaf delays, auto-close,
+safety mode, pedestrian mode, lights, photocells, buzzer, latch, LED orientation,
+single/dual gate, and closing reverse duration. Values stay unknown until a
+validated controller read; they are never optimistically published or restored
+from flash. System learning, factory reset, PIN changes and firmware updates
+remain separate operations and are not exposed here.
 
-Configuration is refreshed after connection/status synchronization, or with
-**Read controller settings** (optional, disabled by default in the package).
-Values are the last validated read, not a continuous settings stream. After a
-Bluetooth outage, **Settings update result** explains that retained values may
-be stale. No HA helpers or MQTT discovery are needed.
+Changing an option requires authenticated Bluetooth and fresh confirmed Closed
+feedback. The bridge reads the full configuration, replaces just the selected
+field, submits one guarded `WRITE FUNCTION`, and verifies the complete readback.
+Unknown records and every unrelated value are preserved byte-for-byte. Unknown
+metadata or incomplete/invalid snapshots block writing. Selecting the current
+value makes no board write. Stop cancels an unsent change; reconnect never replays
+writes. A readback mismatch displays actual values and does not overwrite them.
 
-An auto-close change requires a connected, confirmed closed gate. It reads the
-complete configuration afresh, changes only field 9, submits one guarded legacy
-`WRITE FUNCTION` command, waits for `ACK FUNCTION`, then reads back every field.
-P3.6 echoes the full block in `ACK FUNCTION,<fields>`; the acknowledgement must
-match the exact submitted block before readback can complete the transaction.
-The selector displays the controller readback; a mismatch reports actual values
-without retrying the write. Selecting the current value makes no board write.
-Stop or a newly unconfirmed gate can cancel a pending save. A disconnect after
-submission leaves the outcome uncertain; refresh before trying again.
+Motor type has dependent current encodings: Overcurrent/Limit Switch use 2–5 A;
+Hall Sensor uses 0.5–4 A in 0.1 A steps. Current selects list the union of these
+choices, but only values valid for the controller's freshly read mode can be
+saved. Switching motor type converts both current fields while preserving their
+physical amperage. If a threshold cannot be represented in the target mode, the
+change is rejected; choose compatible thresholds first. No default or nearest
+threshold is substituted. Hall mappings are derived from the Android model and
+covered by host tests, but have not been physically validated on Hall hardware.
 
-Unknown parameter records are retained byte-for-byte. Unknown metadata suffixes,
-malformed/incomplete snapshots and Hall Sensor mode block editing. Motor/safety
-parameters are read-only; learning, reset, alternative-protocol and arbitrary
-UART commands remain blocked. Only the constructed in-progress auto-close
-transaction can submit a configuration write. No write is scheduled on boot or
-reconnect. Board write/readback must still be physically validated on each new
-controller/firmware; host transaction tests use simulated Bluetooth.
+**Read controller settings** refreshes all values (optional button, disabled by
+default). Normal connection synchronization also reads them. **Settings update
+result** explains validation, rejected edits and uncertain outcomes. Settings
+retain the last validated values during loss of feedback; they are not a live
+settings stream. The original 18 read-only sensor entities are replaced by
+`select.*` entities with the same names; Auto-closing keeps its existing select.
+Update any consumers of the old `sensor.*` settings entities during migration.
+Covers, Gate state, Bluetooth connection and unrelated entity IDs are unchanged.
 
-Settings transactions wait at least 250 ms after the previous matched reply;
-automatic refresh waits for confirmed Closed and a 500 ms idle gap. A settings
-read receiving unrelated UART replies is abandoned after three reads, leaving
-healthy Bluetooth connected and normal status polling running. An uncertain
-post-write readback is reported explicitly and never resends the write.
-An uncertain outcome survives disconnection messages until a complete fresh
-configuration read establishes the controller's actual values.
+### Shared UART reply recovery
+
+EyeOpen/cloud clients can overwrite the shared UART reply. The bridge serializes
+its own operations and waits at least 250 ms between settings transactions.
+It searches multiline responses for a complete matching reply, rejects conflicting
+acknowledgements, and validates every echoed byte of a full write acknowledgement.
+If a configuration reply is overwritten, it resends **READ FUNCTION only** with
+staggered backoff: at most four sends, each with three reply reads. It retains a
+healthy Bluetooth connection throughout these text mismatches. Invalid or
+truncated configuration frames also enter this bounded recovery.
+
+If a write acknowledgement is lost, the bridge checks the actual configuration
+by reading it; it never repeats the write. A complete matching readback establishes
+success even without that acknowledgement. Exhausted read recovery reports an
+uncertain save, blocks further edits until a fresh configuration read, and resumes
+normal status polling. Transport failures still disconnect. An uncertain outcome
+survives disconnect messages until a fresh read resolves it. These measures reduce
+reply contention; this protocol has no compare-and-swap or transaction identifier,
+so concurrent edits from another app cannot be made atomic. Avoid editing settings
+from two clients at once.
+
+Host tests cover all field encodings and failure paths. Only the auto-close
+10 → 20 → 10 seconds save has been tested on the physical controller so far;
+other parameter writes still require installation-specific validation.
 
 The PS19001/P3.6 controller returns `ACK READ FUNCTION,` followed by labeled
 fields. The matcher also accepts the colon separator. The model schema is in
@@ -193,8 +214,8 @@ coexistence and stale-event handling. Check that only the intended access mode
 opens and that Gate state becomes Unknown when feedback is lost. Keep
 existing locking and other safety/security configuration in place during tests.
 
-Controller settings (auto-close timer, motor configuration, learning, firmware
-updates and network provisioning) are not implemented. They require separate
-validated read/write workflows and are not exposed through arbitrary UART entry.
+Learning, firmware updates and network provisioning are not implemented. They
+require separate validated workflows and are not exposed through arbitrary UART
+entry. Motor and safety settings should match the installed hardware.
 
 Licensed under MIT. This project is not affiliated with Powertech or EyeOpen.

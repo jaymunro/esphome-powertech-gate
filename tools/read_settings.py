@@ -31,7 +31,10 @@ def decode_snapshot(raw, schema=None):
     known = {p['field'] for p in schema['fields']}
     if not known <= values.keys():
         raise ValueError('Missing required settings fields')
-    for p in schema['fields']:
+    for base in schema['fields']:
+        p = dict(base)
+        if values['1'] == '3' and base['field'] in schema['hall_current']['fields']:
+            p.update({k: v for k, v in schema['hall_current'].items() if k != 'fields'})
         value = values[p['field']]
         decimal = p['format'] == 'decimal_width_2'
         if not re.fullmatch(r'[0-9]{2}' if decimal else r'[0-9A-Fa-f]', value):
@@ -41,8 +44,6 @@ def decode_snapshot(raw, schema=None):
             raise ValueError('Out of range field ' + p['field'])
         settings.append({'field': p['field'], 'name': p['name'],
                          'value': p['options'][index], 'wire': value})
-        if p['field'] == '1' and p['options'][index] in schema['unsupported_motor_types']:
-            raise ValueError('Motor type requires a separate current-parameter schema')
     return {'model': schema['model'], 'header': raw[:18], 'records': records,
             'suffix': separator + suffix, 'settings': settings,
             'unknown_fields': {k: v for k, v in records if k not in known}}

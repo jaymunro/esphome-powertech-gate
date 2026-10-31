@@ -16,7 +16,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev6"
+    version: "0.9.0-dev7"
   on_boot:
     priority: -100
     then:
@@ -26,7 +26,7 @@ esphome:
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
-          id(gate_settings_change) = [client](int index) { client->request_auto_close(index); };
+          id(gate_settings_change) = [client](char field, const std::string &option) { client->request_setting(field, option); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
       - script.execute: gate_scan
 
@@ -57,7 +57,7 @@ wifi:
 
 globals:
   - id: gate_settings_change
-    type: std::function<void(int)>
+    type: std::function<void(char, const std::string &)>
     restore_value: false
   - id: require_gate_unlock
     type: bool

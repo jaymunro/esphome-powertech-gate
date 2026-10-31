@@ -39,9 +39,13 @@ class Settings(unittest.TestCase):
             with self.subTest(after=after), self.assertRaises(ValueError):
                 module.decode_snapshot(FRAME.replace(before, after))
 
-    def test_reject_hall_dependency(self):
-        with self.assertRaisesRegex(ValueError, 'separate current'):
-            module.decode_snapshot(FRAME.replace('1:1', '1:3', 1))
+    def test_hall_dependency(self):
+        frame = FRAME.replace('1:1', '1:3', 1).replace('2:01','2:05').replace('3:01','3:40')
+        result=module.decode_snapshot(frame)
+        self.assertEqual(result['settings'][1]['value'],'0.5 A')
+        self.assertEqual(result['settings'][2]['value'],'4 A')
+        with self.assertRaises(ValueError):
+            module.decode_snapshot(FRAME.replace('1:1','1:3',1))
 
     def test_reject_wrong_frame_and_control_bytes(self):
         for frame in [FRAME.replace('FUNCTION,', 'FUNCTIONBAD,'), FRAME + '\x00', FRAME * 30]:

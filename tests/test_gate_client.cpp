@@ -361,7 +361,7 @@ int main() {
   assert(gate_binary.valid && !gate_binary.state);
   gate_lock_state.state="locked"; c16.request("READ FUNCTION"); tick(c16,250);
   assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
-  const std::string complete="ACK READ FUNCTION,1:1,J:1,Z:"+std::string(300,'A');
+  const std::string complete="ACK READ FUNCTION,1:1,2:01,3:01,4:1,5:1,6:1,7:0,8:0,9:0,A:1,B:0,C:0,D:0,E:0,F:0,G:0,H:0,I:1,J:0,Z:ABCD";
   acknowledge(c16,complete);
   assert(settings_snapshot.state==complete && gate_binary.valid && !gate_binary.state);
   const auto after_settings=writes.size(); tick(c16,1000);
@@ -436,8 +436,12 @@ int main() {
   acknowledge(c23,"ACK STATUS:PED CLOSED,0");
   for(int i=0;i<2;++i) { tick(c23,750); event(c23,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0"); }
   assert(p23.disconnections==0 && settings_write_count()==0 && gate_binary.valid);
-  assert(settings_result.state.find("read did not match")!=std::string::npos);
-  tick(c23,1000); assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  assert(settings_result.state.find("retrying read only")!=std::string::npos);
+  const auto before_retry=writes.size(); tick(c23,1500);
+  assert(writes.size()==before_retry+1 && writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c23,base); tick(c23,250);
+  acknowledge(c23,"ACK FUNCTION"); tick(c23,250); acknowledge(c23,changed);
+  assert(settings_write_count()==1 && settings_result.state.find("verified")!=std::string::npos);
   // Lost readback after a successful write remains explicitly uncertain,
   // without resending the write or tearing down the GATT connection.
   reset(); esphome::ble_client::Parent p24; EyeOpenClient c24(false); c24.p=&p24; ready(c24);
@@ -445,8 +449,80 @@ int main() {
   acknowledge(c24,"ACK FUNCTION"); tick(c24,250); acknowledge(c24,"ACK FUNCTION");
   for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
   assert(p24.disconnections==0 && settings_write_count()==1);
+  assert(settings_result.state.find("retrying read only")!=std::string::npos);
+  for(int retry=0;retry<3;++retry) {
+    tick(c24,1600); acknowledge(c24,"ACK FUNCTION");
+    for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
+  }
   assert(settings_result.state.find("uncertain")!=std::string::npos);
+  assert(settings_write_count()==1 && p24.disconnections==0);
+  // An uncertain save must be resolved by a read before any further edit.
+  c24.request_setting('B',"Function ON"); assert(settings_write_count()==1);
   event(c24,ESP_GATTC_CLOSE_EVT);
   assert(settings_result.state.find("uncertain")!=std::string::npos);
+
+  // Every option of every field can encode/decode a complete guarded block.
+  // Current options depend on motor type; unknown records are byte-preserved.
+  GateSettings normal; assert(normal.decode(base));
+  for(const auto &field:GateSettings::fields()) {
+    for(const auto &option:field.options) {
+      const auto command=normal.change_command(field.label,option);
+      assert(!command.empty());
+      GateSettings actual; assert(actual.decode("ACK READ FUNCTION"+command.substr(14)+";src=P9999999"));
+      assert(actual.value_for(field.label)==option && actual.matches_command(command));
+      if(field.label!='1') {
+        for(const auto &other:GateSettings::fields())
+          if(other.label!=field.label) assert(actual.value_for(other.label)==normal.value_for(other.label));
+      }
+    }
+  }
+  auto hall_frame=base; hall_frame.replace(hall_frame.find("1:1"),3,"1:3");
+  hall_frame.replace(hall_frame.find("2:01"),4,"2:20");hall_frame.replace(hall_frame.find("3:01"),4,"3:30");
+  GateSettings hall; assert(hall.decode(hall_frame));
+  assert(hall.value_for('2')=="2 A" && hall.value_for('3')=="3 A");
+  for(char label:{'2','3'}) for(const auto &option:GateSettings::hall_current().options) {
+    auto cmd=hall.change_command(label,option); assert(!cmd.empty());
+    GateSettings actual; assert(actual.decode("ACK READ FUNCTION"+cmd.substr(14)+";src=P9999999"));
+    assert(actual.value_for(label)==option);
+  }
+  // Preserve physical amperage across mode changes, never substitute defaults.
+  auto normal_cmd=hall.change_command('1',"Overcurrent"); assert(!normal_cmd.empty());
+  GateSettings converted; assert(converted.decode("ACK READ FUNCTION"+normal_cmd.substr(14)+";src=P9999999"));
+  assert(converted.value_for('2')=="2 A" && converted.value_for('3')=="3 A");
+  auto low=hall.change_command('2',"0.5 A");GateSettings low_hall;
+  assert(low_hall.decode("ACK READ FUNCTION"+low.substr(14)+";src=P9999999"));
+  assert(low_hall.change_command('1',"Limit Switch").empty());
+  assert(normal.change_command('2',"0.5 A").empty());
+  assert(!GateSettings::option_valid('Z',"Function ON"));
+  assert(normal.change_command('Z',"Function ON").empty());
+  assert(normal.change_command('9',"20 sec;FULL OPEN").empty());
+
+  // All-field request path: the only mutation is the selected parameter.
+  reset(); esphome::ble_client::Parent p25; EyeOpenClient c25(false); c25.p=&p25; ready(c25);
+  c25.request_setting('J',"0.1 sec");tick(c25,250);acknowledge(c25,base);tick(c25,250);
+  auto reverse=normal.change_command('J',"0.1 sec");assert(writes.back().payload=="C="+reverse+";src=P9999999");
+  assert(EyeOpenClient::matching_ack("ERROR:READ LIGHT STATUS\nACK FUNCTION"+reverse.substr(14),reverse));
+  acknowledge(c25,"unrelated\nACK FUNCTION"+reverse.substr(14));tick(c25,250);
+  acknowledge(c25,"ACK READ FUNCTION"+reverse.substr(14)+";src=P9999999");
+  assert(setting_j.state=="0.1 sec" && settings_result.state.find("verified")!=std::string::npos);
+
+  // Lost WRITE acknowledgement: recover via reads, with exactly one write.
+  reset(); esphome::ble_client::Parent p26; EyeOpenClient c26(false); c26.p=&p26; ready(c26);
+  c26.request_auto_close(2);tick(c26,250);acknowledge(c26,base);tick(c26,250);
+  acknowledge(c26,"unrelated");
+  for(int i=0;i<9;++i) { tick(c26,750);event(c26,ESP_GATTC_READ_CHAR_EVT,106,"unrelated"); }
+  assert(settings_write_count()==1 && p26.disconnections==0);
+  tick(c26,500);assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c26,changed);assert(settings_result.state.find("verified")!=std::string::npos);
+  assert(settings_write_count()==1);
+
+  // Stop during read retry cancels unsent edits and retains priority.
+  reset();esphome::ble_client::Parent p27;EyeOpenClient c27(false);c27.p=&p27;ready(c27);
+  c27.request_auto_close(2);tick(c27,250);acknowledge(c27,"unrelated");
+  for(int i=0;i<2;++i) { tick(c27,750);event(c27,ESP_GATTC_READ_CHAR_EVT,106,"unrelated"); }
+  c27.request("STOP");tick(c27,1500);
+  assert(writes.back().payload=="C=STOP;src=P9999999" && settings_write_count()==0);
+  acknowledge(c27,"ACK STOP");
+
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }
