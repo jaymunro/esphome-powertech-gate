@@ -153,7 +153,9 @@ It searches multiline responses for a complete matching reply, rejects conflicti
 acknowledgements, and validates every echoed byte of a full write acknowledgement.
 If a configuration reply is overwritten, it resends **READ FUNCTION only** with
 staggered backoff: at most four sends, each with three reply reads. It retains a
-healthy Bluetooth connection throughout these text mismatches. Invalid or
+healthy Bluetooth connection throughout these text mismatches. Initial and
+reconnect status reads also retain a healthy link and back off on unrelated
+replies; a queued movement command still cannot bypass baseline validation. Invalid or
 truncated configuration frames also enter this bounded recovery.
 
 If a write acknowledgement is lost, the bridge checks the actual configuration

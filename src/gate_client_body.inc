@@ -495,7 +495,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       auth_blocked_ = true;  // No unattended repeated PIN attempts after rejection.
     // An unrelated UART response on a successful GATT read is not link loss.
     // Cloud/app traffic can overwrite the shared UART result characteristic.
-    if (background_poll_ && wire_command_ == "READ STATUS" && authenticated_ &&
+    if ((background_poll_ || user_command_.empty()) && wire_command_ == "READ STATUS" && authenticated_ &&
         phase_ == REPLY_READ && (message == "No matching status reply" ||
           (urgent_stop_ && message == "Bluetooth operation timed out; command not retried"))) {
       ++poll_failures_; last_poll_ = millis();

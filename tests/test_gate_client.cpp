@@ -160,6 +160,16 @@ int main() {
   event(client,ESP_GATTC_CLOSE_EVT); tick(client,100000); assert(writes.size()==failed_count);
   assert(parent.disconnections>0 && !control_session);
 
+  // The initial/reconnect read is also read-only: contention does not tear
+  // down a healthy authenticated link before synchronization can complete.
+  reset(); esphome::ble_client::Parent startup_parent; EyeOpenClient startup(false); startup.p=&startup_parent;
+  startup.request("READ STATUS"); discover(startup); unlock_without_challenge(startup);
+  acknowledge(startup,"ERROR:READ STATUS");
+  for(int i=0;i<2;++i) { tick(startup,750);event(startup,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS"); }
+  assert(startup_parent.disconnections==0);
+  tick(startup,1000);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(startup,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
+
   // Wrong authentication confirmation prevents every C000 command.
   reset(); esphome::ble_client::Parent p2; EyeOpenClient c2(false); c2.p=&p2;
   c2.request("FULL OPEN"); discover(c2);

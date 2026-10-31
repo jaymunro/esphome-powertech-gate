@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev7"
+    version: "0.9.0-dev8"
   on_boot:
     priority: -100
     then:
@@ -772,7 +772,7 @@ esphome:
                 auth_blocked_ = true;  // No unattended repeated PIN attempts after rejection.
               // An unrelated UART response on a successful GATT read is not link loss.
               // Cloud/app traffic can overwrite the shared UART result characteristic.
-              if (background_poll_ && wire_command_ == "READ STATUS" && authenticated_ &&
+              if ((background_poll_ || user_command_.empty()) && wire_command_ == "READ STATUS" && authenticated_ &&
                   phase_ == REPLY_READ && (message == "No matching status reply" ||
                     (urgent_stop_ && message == "Bluetooth operation timed out; command not retried"))) {
                 ++poll_failures_; last_poll_ = millis();
