@@ -616,11 +616,24 @@ int main() {
   reset();car_cover.position=0;ped_cover.position=0;
   esphome::ble_client::Parent p32;EyeOpenClient c32(false);c32.p=&p32;ready(c32);
   c32.request("FULL OPEN");acknowledge(c32,"ERROR:READ LIGHT STATUS");
-  for(int i=0;i<2;++i){tick(c32,750);event(c32,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");}
+  for(int i=0;i<8;++i){tick(c32,250);event(c32,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");}
   assert(p32.disconnections==0 && control_result.state.find("Acknowledgement missing")!=std::string::npos);
   tick(c32,0);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
   acknowledge(c32,"ACK STATUS:PED OPENING,15");tick(c32,500);acknowledge(c32,"ACK STATUS:PED OPENING,30");
   assert(car_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && ped_cover.position==0);
   assert(std::count_if(writes.begin(),writes.end(),[](const Write&w){return w.payload=="C=FULL OPEN;src=P9999999";})==1);
+  // Movement acknowledgements have zero artificial first/read retry gaps.
+  reset();esphome::ble_client::Parent p33;EyeOpenClient c33(false);c33.p=&p33;ready(c33);
+  c33.request("PED OPEN");const auto ack_reads=reads.size();
+  event(c33,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c33,0);
+  assert(reads.size()==ack_reads+1);tick(c33,0);assert(reads.size()==ack_reads+1);
+  event(c33,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");tick(c33,0);
+  assert(reads.size()==ack_reads+2);tick(c33,0);assert(reads.size()==ack_reads+2);
+  event(c33,ESP_GATTC_READ_CHAR_EVT,106,"ACK PED OPEN");
+  assert(control_result.state=="Acknowledged: PED OPEN" && p33.disconnections==0);
+  // Extremely fast stale reads are capped, even if the clock barely advances.
+  c33.request("FULL OPEN");event(c33,ESP_GATTC_WRITE_CHAR_EVT,106);
+  for(int i=0;i<12;++i){tick(c33,0);event(c33,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+  assert(p33.disconnections==0 && control_result.state.find("Acknowledgement missing")!=std::string::npos);
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

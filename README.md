@@ -256,7 +256,10 @@ read completes, including an unrelated reply; background rereads no longer
 hold it up. Startup/reconnect baseline validation, lock checks, serialized GATT
 operations and no movement replay remain unchanged.
 
-A missing movement acknowledgement gets three bounded reply reads, then the
+Movement acknowledgement reads have no added first-read or reread delay. They
+are serialized, with a two-second retry window and a maximum of 12 completed
+reads (whichever ends first); an outstanding read still has its transport
+timeout. A missing movement acknowledgement then causes the
 bridge retains the healthy link and resumes status reads. The outcome remains
 explicitly uncertain; no movement is replayed. A failed GATT operation still
 uses transport-failure handling. This avoids an eight-second telemetry stall

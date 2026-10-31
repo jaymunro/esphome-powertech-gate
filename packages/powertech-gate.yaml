@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.7"
+    version: "0.9.0-alpha.8"
   on_boot:
     priority: -100
     then:
@@ -513,7 +513,9 @@ esphome:
                   // Preserve it even if another client overwrites the UART acknowledgement.
                   if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
                     feedback_.commanded_open(wire_command_=="PED OPEN",millis());
-                  phase_ = REPLY_WAIT; deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : 200);
+                  if (movement_command(wire_command_)) motion_ack_deadline_=millis()+2000;
+                  phase_ = REPLY_WAIT;
+                  deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : (movement_command(wire_command_) ? 0 : 200));
                 }
                 return;
               }
@@ -581,7 +583,13 @@ esphome:
                     // user wait through background-only rereads; never bypass reconnect
                     // baseline validation or interrupt an outstanding GATT operation.
                     wire_command_.clear(); next_command();
-                  } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : ((wire_command_=="READ STATUS" || movement_command(wire_command_)) ? 3u : 10u))) {
+                  } else if (movement_command(wire_command_) && write_confirmed_) {
+                    // Read again as soon as this completed read allows. No fixed pause,
+                    // no concurrent GATT reads, and no movement retransmission.
+                    if (++read_attempts_<12 && !due(millis(),motion_ack_deadline_)) {
+                      phase_=REPLY_WAIT; deadline_=millis();
+                    } else fail("No matching UART acknowledgement; command outcome uncertain; not retried");
+                  } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : (wire_command_=="READ STATUS" ? 3u : 10u))) {
                     if (wire_command_ == "READ STATUS") {
                       id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
                       id(unmatched_replies).publish_state(++unmatched_replies_);
@@ -774,7 +782,7 @@ esphome:
             bool authenticated_{false}, busy_{false}, urgent_stop_{false};
             bool baseline_needed_{false}, write_confirmed_{false}, background_poll_{false};
             uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
-            uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0};
+            uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
             unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
             uint32_t poll_interval_{1000}, fast_until_{0};
             bool fast_window_{false}, status_due_{false};
