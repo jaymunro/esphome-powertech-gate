@@ -283,8 +283,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint16_t event_handle_{0};
   uint32_t next_reconnect_{0}, reconnect_delay_{15000};
   static void publish_cover(esphome::cover::Cover *cover, const std::string &state) {
-    // Keep the last confirmed position when the access mode is unknown.
-    // Gate state separately tells consumers whether feedback is usable.
+    // Retain the entire last confirmed state while feedback is unconfirmed.
+    // Clearing motion here would turn Opening at position 0 into Closed,
+    // or Closing at position 1 into Open. Gate state is the validity guard.
+    if (state == "unavailable") return;
     auto operation = esphome::cover::COVER_OPERATION_IDLE;
     float position = cover->position;
     if (state == "closed") position = esphome::cover::COVER_CLOSED;

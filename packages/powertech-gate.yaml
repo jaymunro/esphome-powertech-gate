@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.8.4"
+    version: "0.8.5"
   on_boot:
     priority: -100
     then:
@@ -416,8 +416,10 @@ esphome:
             uint16_t event_handle_{0};
             uint32_t next_reconnect_{0}, reconnect_delay_{15000};
             static void publish_cover(esphome::cover::Cover *cover, const std::string &state) {
-              // Keep the last confirmed position when the access mode is unknown.
-              // Gate state separately tells consumers whether feedback is usable.
+              // Retain the entire last confirmed state while feedback is unconfirmed.
+              // Clearing motion here would turn Opening at position 0 into Closed,
+              // or Closing at position 1 into Open. Gate state is the validity guard.
+              if (state == "unavailable") return;
               auto operation = esphome::cover::COVER_OPERATION_IDLE;
               float position = cover->position;
               if (state == "closed") position = esphome::cover::COVER_CLOSED;

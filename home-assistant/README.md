@@ -28,8 +28,11 @@ Covers are non-optimistic. A command ACK does not report movement. A recent
 acknowledged local opening command can identify the access mode once fresh
 status confirms movement; ambiguous transmitter movement still waits for a
 distinguishing controller state. When the access
-mode is unknown, they retain the last confirmed position and clear the displayed
-movement operation. On boot they have no trustworthy remembered gate position;
+mode or feedback is unknown, they retain the entire last confirmed cover state,
+including its movement operation. A missing reply cannot invent a Closed/Open
+endpoint by resetting Opening/Closing to idle. This also means movement can
+remain displayed through a connection failure until fresh feedback returns.
+On boot they have no trustworthy remembered gate position;
 **ignore covers until Gate state is valid**. Unknown access mode during movement
 can also leave cover positions unchanged even when Gate state is Open. Gate
 state alone does not prove that the car/pedestrian access mode is known.

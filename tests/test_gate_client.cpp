@@ -285,12 +285,33 @@ int main() {
   acknowledge(c14,"ACK STATUS:PED OPENING,10");
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED OPENING,30");
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && car_cover.position==0);
+  // Untimestamped notifications invalidate feedback, not the last confirmed
+  // native phase. Resetting motion to idle here falsely displayed Closed.
+  const auto opening_publications=ped_cover.publications;
+  event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpened");
+  assert(!gate_binary.valid && ped_cover.position==0);
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
+  assert(ped_cover.publications==opening_publications);
+  tick(c14,0); acknowledge(c14,"ACK STATUS:PED OPENING,30");
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED OPENING,40");
   tick(c14,500); acknowledge(c14,"ACK STATUS:SINGLE STOPPED,25");
   assert(ped_cover.position==1 && ped_cover.current_operation==esphome::cover::COVER_OPERATION_IDLE);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSING,10");
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
+  const auto closing_publications=ped_cover.publications;
+  event(c14,ESP_GATTC_NOTIFY_EVT,42,"Closing");
+  assert(!gate_binary.valid && ped_cover.position==1);
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
+  assert(ped_cover.publications==closing_publications);
+  tick(c14,0); acknowledge(c14,"ACK STATUS:PED CLOSING,10");
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSING,5");
+  assert(gate_binary.valid);
+  // Expiry also cannot invent an endpoint. Consumers must check Gate state.
+  clock_ms+=26000; c14.maintenance();
+  assert(!gate_binary.valid && ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
   assert(!gate_binary.valid);  // A single closed reply is still insufficient.
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1"); assert(!gate_binary.valid);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && ped_cover.position==0 && car_cover.position==0);

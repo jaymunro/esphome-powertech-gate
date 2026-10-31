@@ -29,7 +29,9 @@ source sensors and command buttons stay internal to the firmware.
 Gate state is an opening-class binary sensor: Open/Closed with fresh feedback,
 **Unknown** if Bluetooth disconnects, feedback expires or the state is not yet
 confirmed, and **Unavailable** when the ESP32 cannot reach Home Assistant.
-The native covers retain their last confirmed position when feedback is lost;
+The native covers retain their entire last confirmed state, including Opening
+or Closing, when feedback is lost or awaiting confirmation. They can therefore
+still display movement after a lost connection until fresh feedback returns;
 they do not independently become unavailable on a Bluetooth failure. Before
 using a cover in an automation, require Gate state to be `on` or `off`.
 PS19001 permits a one-unit closed-position tolerance only with an explicit
