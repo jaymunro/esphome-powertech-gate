@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 using esp_err_t = int; using esp_gatt_if_t = int;
-constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0;
+constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0, ESP_GATT_IF_NONE=255;
 enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
 void test_log(const char *, const char *, ...) {}
@@ -54,9 +54,9 @@ std::string base64_encode(const uint8_t *,size_t) { return "AAAAAAAAAAAAAAAAAAAA
 namespace ble_client {
 struct Characteristic { uint16_t handle; };
 struct Parent {
-  Characteristic auth{46},command{106},result{42}; int connections=0,disconnections=0;
+  Characteristic auth{46},command{106},result{42}; int connections=0,disconnections=0,gatt_if=1;
   void connect() { ++connections; } void disconnect() { ++disconnections; }
-  int get_gattc_if() { return 1; } int get_conn_id() { return 0; }
+  int get_gattc_if() { return gatt_if; } int get_conn_id() { return 0; }
   int register_for_notify(uint16_t) { return ESP_OK; }
   Characteristic *get_characteristic(int,int c) { return c==0xB001?&auth:(c==0xC000?&command:&result); }
 };
@@ -169,6 +169,19 @@ int main() {
   assert(startup_parent.disconnections==0);
   tick(startup,1000);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
   acknowledge(startup,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
+
+  // Boot can precede GATT registration. No lost early connect or queued
+  // movement; the independent maintenance interval starts status once ready.
+  reset();monitor_enabled=true;esphome::ble_client::Parent boot_parent;boot_parent.gatt_if=ESP_GATT_IF_NONE;
+  EyeOpenClient boot_client(false);boot_client.p=&boot_parent;
+  boot_client.maintenance();assert(boot_parent.connections==0 && !control_session);
+  boot_parent.gatt_if=1;clock_ms+=1000;boot_client.maintenance();
+  assert(boot_parent.connections==1 && control_session);
+  // Even if ESPHome never calls the node loop or supplies CLOSE_EVT, the
+  // independent watchdog releases the session and permits status-only retry.
+  clock_ms+=12000;boot_client.maintenance();assert(!control_session);
+  clock_ms+=30000;boot_client.maintenance();assert(boot_parent.connections==2);
+  assert(writes.empty());
 
   // Wrong authentication confirmation prevents every C000 command.
   reset(); esphome::ble_client::Parent p2; EyeOpenClient c2(false); c2.p=&p2;

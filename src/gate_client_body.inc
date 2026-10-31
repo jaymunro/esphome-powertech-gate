@@ -3,6 +3,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
  public:
   explicit EyeOpenClient(bool auto_settings=true) {
     auto_settings_=auto_settings; settings_due_=auto_settings;
+    next_reconnect_=millis(); next_settings_refresh_=millis();
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
       id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
@@ -10,6 +11,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   }
 
   void maintenance() {
+    // ESPHome disables its idle BLE-client loop. Keep our connection deadline
+    // alive independently, including when a connection produced no GATT event.
+    if(id(control_session)) loop();
     feedback_.tick(millis()); publish_feedback();
     if (id(monitor_enabled) && !id(control_session) && !auth_blocked_ && due(millis(), next_reconnect_)) {
       next_reconnect_ = millis() + reconnect_delay_;
@@ -53,6 +57,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     if ((command == "FULL OPEN" || command == "PED OPEN") && id(require_gate_unlock) && id(gate_lock_state).state != "unlocked") {
       id(control_result).publish_state("Not sent: Home Assistant gate lock is locked or unavailable"); return;
+    }
+    if(!id(control_session) && this->parent()->get_gattc_if()==ESP_GATT_IF_NONE) {
+      status("Waiting for Bluetooth GATT registration; no command sent");
+      next_reconnect_=millis()+1000; return;
     }
     auth_blocked_ = false;
     if (!allowed(command)) { status("Rejected: command is not allowlisted"); return; }
@@ -527,6 +535,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     status(message); busy_ = false; user_command_.clear(); urgent_stop_ = false;
     feedback_.disconnected(); publish_feedback();
     phase_ = IDLE; this->parent()->disconnect();
+    // A rejected early connect may never emit CLOSE_EVT. Release only our
+    // session here; the SDK still guards its own connecting/disconnecting link.
+    authenticated_=false; id(control_session)=false;
   }
   esp_err_t write(uint16_t handle, const std::string &value) {
     return esp_ble_gattc_write_char(this->parent()->get_gattc_if(), this->parent()->get_conn_id(),

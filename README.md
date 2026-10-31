@@ -77,7 +77,9 @@ main. Only select a model that has been validated for your controller.
    `unlocked`, or deliberately set `require_gate_unlock: "false"` if you do not
    have a software lock. Unknown/locked blocks opening while the guard is on.
 5. Install and add the ESPHome device to Home Assistant. Bluetooth monitoring
-   starts automatically on every boot and reconnects after a link failure. Leave
+   starts automatically on every boot and reconnects after a link failure. The
+   driver waits for GATT registration and runs its timeout watchdog independently
+   of ESPHome's idle BLE-client loop. Leave
    the gate closed for the initial status synchronization.
 6. The covers, Gate state and Bluetooth connection appear automatically through
    the native ESPHome integration. No MQTT broker or HA helpers are required.
