@@ -7,7 +7,9 @@ protocol. Similar gate hardware or a shared app name is not proof of compatibili
 2. Keep the exact schema fields. `family` must currently be `WBT01` and
    `protocol` must be `legacy_uart_v1`; a different protocol requires driver work.
 3. Define the observed pedestrian stopped signature, full-open minimum and exact
-   closed position. Positions are in the controller's 0–100 protocol scale,
+   closed position plus a validated `closed_position_tolerance` (0 for exact
+   matching). A CLOSED status is always required; tolerance alone cannot close
+   a moving/stopped gate. PS19001 accepts 0 or 1 after repeated CLOSED replies. Positions are in the controller's 0–100 protocol scale,
    not measurements of separate leaves. Disable pedestrian support if unproven.
 4. Record tested firmware and what was physically verified in `validation`.
 5. Add sanitized fixtures/tests for idle closed, pedestrian opening/open/auto-close,

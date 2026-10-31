@@ -44,5 +44,19 @@ int main() {
  assert(single.gate()=="open" && single.pedestrian()=="unavailable");
  assert(!single.accept({"PED OPENED",90},20000)); assert(single.accept({"PED OPENED",90},22000));
  assert(single.car()=="open");
+ // Regression: the board reports CLOSED,1 after a small closing reversal.
+ // Only this model's explicit tolerance is broadened; position alone cannot close.
+ GateFeedback tolerant({"PS19001", "SINGLE STOPPED", 95, 0, true, 1});
+ tolerant.connected(0);
+ assert(!tolerant.accept({"PED CLOSED",1},16000));
+ assert(tolerant.accept({"PED CLOSED",1},18000));
+ assert(tolerant.gate()=="closed" && tolerant.car()=="closed" && tolerant.pedestrian()=="closed");
+ assert(tolerant.accept({"PED CLOSED",0},20000));
+ assert(!tolerant.accept({"PED CLOSING",1},22000));
+ assert(tolerant.accept({"PED CLOSING",1},24000));
+ assert(tolerant.gate()=="open");
+ tolerant.accept({"PED CLOSED",2},26000);
+ assert(tolerant.accept({"PED CLOSED",2},28000)); assert(tolerant.gate()!="closed");
+ tolerant.tick(53001); assert(!tolerant.available());
  puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and wraparound.");
 }

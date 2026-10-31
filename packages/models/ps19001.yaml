@@ -4,4 +4,5 @@ substitutions:
   profile_pedestrian_status: "SINGLE STOPPED"
   profile_full_open_min: "95"
   profile_closed_position: "0"
+  profile_closed_tolerance: "1"
   profile_supports_pedestrian: "true"

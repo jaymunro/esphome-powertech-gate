@@ -12,7 +12,10 @@ using esp_err_t = int; using esp_gatt_if_t = int;
 constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0;
 enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
+void test_log(const char *, const char *, ...) {}
+#define ESP_LOGW test_log
 struct esp_ble_gattc_cb_param_t {
+  struct { int reason=0; } close;
   struct { int handle=0, status=0; } reg_for_notify;
   struct { int handle=0; uint8_t *value=nullptr; size_t value_len=0; } notify;
   struct { int handle=0, conn_id=0, status=0; } write;
@@ -30,7 +33,7 @@ struct Number { float state=0; void publish_state(float s) { state=s; } };
 Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
-int profile_full_open_min=95,profile_closed_position=0; bool profile_supports_pedestrian=true;
+int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=1; bool profile_supports_pedestrian=true;
 Text control_result,poll_health; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;
 Number c004_packets; bool control_session=false,gate_listening=false;
@@ -169,7 +172,7 @@ int main() {
   // retaining the successful motion result. Only READ STATUS is issued later.
   tick(c5,10000); acknowledge(c5,"C=ERROR:READ LIGHT STATUS;src=other");
   for(int i=0;i<2;++i) { tick(c5,750); event(c5,ESP_GATTC_READ_CHAR_EVT,106,"C=unrelated"); }
-  assert(p5.disconnections==0 && poll_health.state.find("failed 1/3")!=std::string::npos);
+  assert(p5.disconnections==0 && poll_health.state.find("mismatch 1")!=std::string::npos);
   assert(control_result.state=="Acknowledged: PED OPEN");
   const auto failed_poll_writes=writes.size(); tick(c5,999);
   assert(writes.size()==failed_poll_writes); tick(c5,1);
@@ -183,16 +186,18 @@ int main() {
   event(c5,ESP_GATTC_CLOSE_EVT);
   assert(control_result.state=="Acknowledged: PED OPEN");
 
-  // Three consecutive reply failures disconnect; no motion is queued or replayed.
+  // Repeated UART mismatches retain the GATT link, retry only status, then recover.
   reset(); esphome::ble_client::Parent p6; EyeOpenClient c6; c6.p=&p6;
   c6.request("READ STATUS"); discover(c6); unlock_without_challenge(c6);
   acknowledge(c6,"C=ACK STATUS:PED CLOSED,0");
-  for(int failure=0;failure<3;++failure) {
-    tick(c6,failure==0?10000:(failure==1?1000:2000));
+  for(int failure=0;failure<4;++failure) {
+    tick(c6,failure==0?10000:(failure==1?1000:(failure==2?2000:5000)));
     acknowledge(c6,"C=unrelated");
     for(int i=0;i<2;++i) { tick(c6,750); event(c6,ESP_GATTC_READ_CHAR_EVT,106,"C=unrelated"); }
   }
-  assert(p6.disconnections==1 && writes.size()==4);
+  assert(p6.disconnections==0 && writes.size()==5);
+  tick(c6,5000); acknowledge(c6,"C=ACK STATUS:PED CLOSED,1");
+  assert(p6.disconnections==0 && poll_health.state=="Status reply received");
   assert(control_result.state.empty());
   for(const auto &w:writes) assert(w.payload=="C=READ STATUS;src=P9999999");
   // Stop cannot get stranded behind a background poll whose GATT read times out.
@@ -242,5 +247,19 @@ int main() {
   assert(!gate_binary.valid);
   assert(!bluetooth_connection.state);
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_IDLE);
+  // A failed GATT read still tears down the link; only text mismatches are retained.
+  reset(); esphome::ble_client::Parent p13; EyeOpenClient c13; c13.p=&p13;
+  c13.request("READ STATUS"); discover(c13); unlock_without_challenge(c13);
+  acknowledge(c13,"ACK STATUS:PED CLOSED,0");
+  tick(c13,10000); event(c13,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c13,200);
+  event(c13,ESP_GATTC_READ_CHAR_EVT,106,"",1); assert(p13.disconnections==1);
+  // An explicit CLOSED,1 reply must close both native access covers too.
+  reset(); car_cover.position=1; ped_cover.position=1;
+  esphome::ble_client::Parent p12; EyeOpenClient c12; c12.p=&p12;
+  c12.request("READ STATUS"); discover(c12); unlock_without_challenge(c12);
+  acknowledge(c12,"ACK STATUS:PED CLOSED,1");
+  clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
+  clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
+  assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
   puts("Protocol and transaction checks passed, including unrelated replies, bounded polling/backoff/recovery and preserved movement results (mock Bluetooth/hash). ");
 }

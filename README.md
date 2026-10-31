@@ -32,7 +32,12 @@ confirmed, and **Unavailable** when the ESP32 cannot reach Home Assistant.
 The native covers retain their last confirmed position when feedback is lost;
 they do not independently become unavailable on a Bluetooth failure. Before
 using a cover in an automation, require Gate state to be `on` or `off`.
-A connected Bluetooth link alone does not guarantee fresh feedback. See
+PS19001 permits a one-unit closed-position tolerance only with an explicit
+CLOSED status and repeated fresh confirmation. Shared UART reply mismatches
+retry status reads after 1, 2, then 5 seconds without tearing down a healthy
+Bluetooth link. Actual transport failures still disconnect; no motion command
+is automatically retried. A connected Bluetooth link alone does not guarantee
+fresh feedback. See
 [Home Assistant entity semantics](home-assistant/README.md).
 
 ## Installation

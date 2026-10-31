@@ -18,4 +18,10 @@ class Profiles(unittest.TestCase):
  def test_rejects_boolean_threshold(self):
   self.p['closed_position']=False
   with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_excessive_closed_tolerance(self):
+  self.p['closed_position_tolerance']=6
+  with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_boolean_closed_tolerance(self):
+  self.p['closed_position_tolerance']=True
+  with self.assertRaises(ValueError): module.validate(self.p)
 if __name__=='__main__': unittest.main()

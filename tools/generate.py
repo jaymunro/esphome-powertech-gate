@@ -3,7 +3,7 @@
 import argparse,json,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-FIELDS={'id','family','protocol','supports_pedestrian','pedestrian_stopped_status','full_open_min_position','closed_position','tested_firmware','validation'}
+FIELDS={'id','family','protocol','supports_pedestrian','pedestrian_stopped_status','full_open_min_position','closed_position','closed_position_tolerance','tested_firmware','validation'}
 def validate(p):
     if set(p)!=FIELDS: raise ValueError('Model fields must exactly match the documented schema')
     if not re.fullmatch(r'[A-Z0-9_-]{2,32}',p['id']): raise ValueError('Invalid model id')
@@ -12,6 +12,8 @@ def validate(p):
     if not re.fullmatch(r'(PED|SINGLE|FULL) STOPPED',p['pedestrian_stopped_status']): raise ValueError('Unsupported pedestrian status signature')
     lo,hi=p['closed_position'],p['full_open_min_position']
     if type(lo) is not int or type(hi) is not int or not 0<=lo<hi<=100: raise ValueError('Positions must be integers in 0..100, closed < full-open')
+    tolerance=p['closed_position_tolerance']
+    if type(tolerance) is not int or not 0<=tolerance<=5 or lo+tolerance>=hi: raise ValueError('Closed tolerance must be 0..5 and below full-open')
     if not isinstance(p['tested_firmware'],list) or not p['tested_firmware'] or not all(isinstance(x,str) for x in p['tested_firmware']): raise ValueError('Document tested firmware')
     if not isinstance(p['validation'],str) or not p['validation']: raise ValueError('Document validation and remaining limitations')
     return p
@@ -22,6 +24,7 @@ def render_profile(p):
       f'  profile_pedestrian_status: "{p["pedestrian_stopped_status"]}"\n'
       f'  profile_full_open_min: "{p["full_open_min_position"]}"\n'
       f'  profile_closed_position: "{p["closed_position"]}"\n'
+      f'  profile_closed_tolerance: "{p["closed_position_tolerance"]}"\n'
       f'  profile_supports_pedestrian: "{str(p["supports_pedestrian"]).lower()}"\n')
 
 def outputs():

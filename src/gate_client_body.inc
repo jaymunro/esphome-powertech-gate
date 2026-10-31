@@ -4,7 +4,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   EyeOpenClient() {
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
-      id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian)});
+      id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
+      id(profile_closed_tolerance)});
   }
 
   void maintenance() {
@@ -88,6 +89,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
                            esp_ble_gattc_cb_param_t *param) override {
     if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
     if (event == ESP_GATTC_CLOSE_EVT) {
+      ESP_LOGW("gate_link", "Bluetooth closed: reason=%d phase=%d poll_failures=%u",
+               int(param->close.reason), int(phase_), poll_failures_);
       id(bluetooth_connection).publish_state(false);
       const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
       feedback_.disconnected(); publish_feedback();
@@ -306,24 +309,26 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     if (message.find("Authentication was not confirmed") != std::string::npos ||
         message.find("result 14") != std::string::npos || message.find("result 19") != std::string::npos)
       auth_blocked_ = true;  // No unattended repeated PIN attempts after rejection.
-    next_reconnect_ = millis() + reconnect_delay_;
-    reconnect_delay_ = std::min(uint32_t(120000), reconnect_delay_ * 2);
-    // A background UART reply mismatch is a polling problem, not a failed motion.
+    // An unrelated UART response on a successful GATT read is not link loss.
+    // Cloud/app traffic can overwrite the shared UART result characteristic.
     if (background_poll_ && wire_command_ == "READ STATUS" && authenticated_ &&
-        (phase_ == REPLY_READ || phase_ == REPLY_WAIT)) {
+        phase_ == REPLY_READ && (message == "No matching status reply" ||
+          (urgent_stop_ && message == "Bluetooth operation timed out; command not retried"))) {
       ++poll_failures_; last_poll_ = millis();
-      poll_interval_ = poll_failures_ == 1 ? 1000 : 2000;  // Only READ STATUS is resubmitted.
-      id(poll_health).publish_state("Status poll failed " + std::to_string(poll_failures_) +
-          "/3: " + message);
-      status("Status poll failed; no movement command was retried");
+      poll_interval_ = poll_failures_ == 1 ? 1000 : (poll_failures_ == 2 ? 2000 : 5000);
+      id(poll_health).publish_state("Status reply mismatch " + std::to_string(poll_failures_) +
+          ": retaining Bluetooth; retrying status only");
+      status("Status reply mismatch; no movement command was retried");
       wire_command_.clear(); busy_ = false;
       if (urgent_stop_) {
         background_poll_ = false; busy_ = true;
         phase_ = COMMAND_WAIT; deadline_ = millis() + 50; return;
       }
-      if (poll_failures_ < 3) { phase_ = IDLE_CONNECTED; return; }
-      phase_ = IDLE; this->parent()->disconnect(); return;
+      phase_ = IDLE_CONNECTED; return;
     }
+    ESP_LOGW("gate_link", "Operation failed: %s (phase=%d)", message.c_str(), int(phase_));
+    next_reconnect_ = millis() + reconnect_delay_;
+    reconnect_delay_ = std::min(uint32_t(120000), reconnect_delay_ * 2);
     if (wire_command_ == "READ STATUS") {
       id(poll_health).publish_state("Status check failed: " + message);
       if (!user_command_.empty() && user_command_ != "READ STATUS")

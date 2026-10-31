@@ -5,6 +5,7 @@ class GateFeedback {
     std::string model{"PS19001"}, pedestrian_status{"SINGLE STOPPED"};
     int full_open_min{95}, closed_position{0};
     bool supports_pedestrian{true};
+    int closed_position_tolerance{0};
   };
   GateFeedback() = default;
   explicit GateFeedback(Profile profile) : profile_(profile) {}
@@ -25,7 +26,7 @@ class GateFeedback {
     if (!linked_ || uint32_t(now-connected_at_) < 15000 ||
         (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
     const auto word = s.text.substr(s.text.find_last_of(' ')+1);
-    const bool closed = word == "CLOSED" && s.position == profile_.closed_position;
+    const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
     std::string next_mode = closed ? "closed" : mode_;
     if (word == "OPENING") next_mode.clear();
     if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
