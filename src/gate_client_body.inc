@@ -185,7 +185,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         if (write_confirmed_ && matching_ack(reply, wire_command_)) {
           const auto finished = wire_command_;
           if (finished == "READ STATUS") {
-            last_poll_ = millis(); poll_interval_ = 2000; poll_failures_ = 0; reconnect_delay_ = 15000;
+            last_poll_ = millis(); poll_interval_ = 1000; poll_failures_ = 0; reconnect_delay_ = 15000;
             GateFeedback::Sample sample;
             if (GateFeedback::parse_reply(reply, sample)) feedback_.accept(sample, millis());
             publish_feedback();
@@ -312,13 +312,13 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0};
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
-  uint32_t poll_interval_{2000}, fast_until_{0};
+  uint32_t poll_interval_{1000}, fast_until_{0};
   bool fast_window_{false}, status_due_{false};
   void kick_poll(uint32_t now) { fast_window_=true; fast_until_=now+30000; status_due_=true; }
   uint32_t poll_delay(uint32_t now) {
     if (poll_failures_) return poll_interval_;
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 2000;
+    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 1000;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;

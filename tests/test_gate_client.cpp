@@ -261,12 +261,12 @@ int main() {
   clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
-  // Closed polling is 2s; notifications prompt a read without overlapping GATT requests.
+  // Closed polling is 1s; notifications prompt a read without overlapping GATT requests.
   reset(); esphome::ble_client::Parent p14; EyeOpenClient c14; c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
-  const auto idle_writes=writes.size(); tick(c14,1999); assert(writes.size()==idle_writes);
+  const auto idle_writes=writes.size(); tick(c14,999); assert(writes.size()==idle_writes);
   tick(c14,1); assert(writes.size()==idle_writes+1);
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpening"); tick(c14,0); assert(writes.size()==idle_writes+1);
   acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);

@@ -89,7 +89,7 @@ before connecting another Bluetooth client.
 
 ## Polling and movement feedback
 
-Closed idle polling waits 2 seconds after each reply. While open, unsynchronized,
+Closed idle polling waits 1 second after each reply. While open, unsynchronized,
 or within 30 seconds of a controller event/command, it waits 500 ms instead.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
