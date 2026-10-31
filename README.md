@@ -107,7 +107,7 @@ blocked while a notification or candidate awaits confirmation, even if the last
 confirmed displayed state is Closed. Disconnect and stale-status handling are
 unchanged.
 
-An acknowledged HA opening command supplies an 8-second access-mode hint. It
+A successfully submitted HA opening command supplies an 8-second access-mode hint. It
 cannot report Opening/Open by itself: two subsequent status samples must confirm
 actual movement. The hint is discarded on disconnection or expiry, and explicit
 endpoint status overrides it. Without a recent local command, ambiguous generic
@@ -241,10 +241,12 @@ entry. Motor and safety settings should match the installed hardware.
 
 Licensed under MIT. This project is not affiliated with Powertech or EyeOpen.
 
-On PS19001 P3.6, validated FULL OPENING and PED OPENING status signatures
-classify external openings before the fully-open endpoint. Other model profiles
-leave unverified signatures empty. Notifications alone still cannot establish
-movement. Concatenated status replies are usable only when identical or when
+Hardware testing showed that PS19001 P3.6 may report PED OPENING during full
+car travel after a previous pedestrian command. FULL/PED prefixes therefore
+are not trusted as independent access-mode evidence. External opening mode
+remains unknown until a distinguishing controller state arrives. A local
+command supplies only a bounded hint; fresh status still proves movement.
+Concatenated status replies are usable only when identical or when
 one exact movement phase/prefix advances monotonically; the bundle counts as
 one sample, never two confirmations. Mixed phases/modes, reversed progression
 and contradictory endpoints remain rejected.
@@ -253,3 +255,9 @@ A queued user command can proceed as soon as an in-flight background status
 read completes, including an unrelated reply; background rereads no longer
 hold it up. Startup/reconnect baseline validation, lock checks, serialized GATT
 operations and no movement replay remain unchanged.
+
+A missing movement acknowledgement gets three bounded reply reads, then the
+bridge retains the healthy link and resumes status reads. The outcome remains
+explicitly uncertain; no movement is replayed. A failed GATT operation still
+uses transport-failure handling. This avoids an eight-second telemetry stall
+and reconnect quarantine solely because another client overwrote the ACK.

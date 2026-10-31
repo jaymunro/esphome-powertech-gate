@@ -9,8 +9,6 @@
   "tested_firmware": [
     "P3.6"
   ],
-  "validation": "PS19001 P3.6: CLOSED positions 0 through 3 observed with user-confirmed shut leaves; 3 reproduced after a car cycle on 1 November 2026. User requested tolerance through 5 for small closing obstructions or reversal. Positions 4 and 5 are policy tolerance, not physically validated endpoints. Explicit CLOSED status and repeated fresh confirmation remain required; position alone never closes the gate. Opening signatures FULL OPENING and PED OPENING observed on this board/firmware; other profiles must leave unvalidated signatures empty.",
-  "closed_position_tolerance": 5,
-  "car_opening_status": "FULL OPENING",
-  "pedestrian_opening_status": "PED OPENING"
+  "validation": "PS19001 P3.6: CLOSED positions 0 through 3 observed with user-confirmed shut leaves; 3 reproduced after a car cycle on 1 November 2026. User requested tolerance through 5 for small closing obstructions or reversal. Positions 4 and 5 are policy tolerance, not physically validated endpoints. Explicit CLOSED status and repeated fresh confirmation remain required; position alone never closes the gate.",
+  "closed_position_tolerance": 5
 }

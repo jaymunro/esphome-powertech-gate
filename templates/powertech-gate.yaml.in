@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.6"
+    version: "0.9.0-alpha.7"
   on_boot:
     priority: -100
     then:
@@ -82,14 +82,6 @@ globals:
     type: std::string
     restore_value: false
     initial_value: '"${profile_pedestrian_status}"'
-  - id: profile_car_opening_status
-    type: std::string
-    restore_value: false
-    initial_value: '"${profile_car_opening_status}"'
-  - id: profile_pedestrian_opening_status
-    type: std::string
-    restore_value: false
-    initial_value: '"${profile_pedestrian_opening_status}"'
   - id: profile_full_open_min
     type: int
     restore_value: false

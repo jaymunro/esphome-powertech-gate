@@ -6,7 +6,6 @@ class GateFeedback {
     int full_open_min{95}, closed_position{0};
     bool supports_pedestrian{true};
     int closed_position_tolerance{0};
-    std::string car_opening_status{}, pedestrian_opening_status{};
   };
   GateFeedback() = default;
   explicit GateFeedback(Profile profile) : profile_(profile) {}
@@ -46,9 +45,6 @@ class GateFeedback {
       if (last_phase_ != "OPENING") next_mode.clear();
       if (hint_pending_ && uint32_t(now-hint_at_) < 8000) next_mode=hint_mode_;
     }
-    // Only model-validated explicit opening signatures override a local hint.
-    if (word == "OPENING" && !profile_.car_opening_status.empty() && s.text == profile_.car_opening_status) next_mode="car";
-    else if (word == "OPENING" && profile_.supports_pedestrian && !profile_.pedestrian_opening_status.empty() && s.text == profile_.pedestrian_opening_status) next_mode="pedestrian";
     if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
     else if (!closed && (word == "OPENED" || word == "OPEN") && s.position >= profile_.full_open_min) next_mode = "car";
     // A previous closed mode says nothing about the next opening.

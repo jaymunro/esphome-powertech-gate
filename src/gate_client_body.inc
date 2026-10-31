@@ -7,7 +7,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
       id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-      id(profile_closed_tolerance), id(profile_car_opening_status), id(profile_pedestrian_opening_status)});
+      id(profile_closed_tolerance)});
   }
 
   void maintenance() {
@@ -212,6 +212,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       } else if (param->write.handle == command_handle_ && phase_ == COMMAND_WRITE) {
         if (param->write.status != ESP_GATT_OK) { fail("Command write failed; no retry scheduled"); return; }
         write_confirmed_ = true; read_attempts_ = 0;
+        // This is only an access-mode hint; fresh status still proves movement.
+        // Preserve it even if another client overwrites the UART acknowledgement.
+        if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
+          feedback_.commanded_open(wire_command_=="PED OPEN",millis());
         phase_ = REPLY_WAIT; deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : 200);
       }
       return;
@@ -280,7 +284,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
           // user wait through background-only rereads; never bypass reconnect
           // baseline validation or interrupt an outstanding GATT operation.
           wire_command_.clear(); next_command();
-        } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : (wire_command_=="READ STATUS" ? 3u : 10u))) {
+        } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : ((wire_command_=="READ STATUS" || movement_command(wire_command_)) ? 3u : 10u))) {
           if (wire_command_ == "READ STATUS") {
             id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
             id(unmatched_replies).publish_state(++unmatched_replies_);
@@ -295,6 +299,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   static bool allowed(const std::string &c) {
     return c == "READ STATUS" || c == "READ FUNCTION" || c == "FULL OPEN" || c == "FULL CLOSE" ||
            c == "PED OPEN" || c == "PED CLOSE" || c == "STOP";
+  }
+  static bool movement_command(const std::string &command) {
+    return allowed(command) && command!="READ STATUS" && command!="READ FUNCTION";
   }
   static bool matching_ack(const std::string &reply, const std::string &command) {
     if(command.rfind("WRITE FUNCTION,",0)==0) {
@@ -487,6 +494,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   void fail(const std::string &message) {
     const bool reply_mismatch=phase_==REPLY_READ &&
       message=="No matching UART acknowledgement; command outcome uncertain; not retried";
+    if(reply_mismatch && write_confirmed_ && authenticated_ && movement_command(wire_command_)) {
+      id(control_result).publish_state("Acknowledgement missing for " + wire_command_ + "; reading status; command not retried");
+      status("Movement acknowledgement uncertain; recovering with status only");
+      wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+      kick_poll(millis()); publish_feedback(); return;
+    }
     if(reply_mismatch && settings_write_sent_ && edit_stage_==EDIT_WRITE && wire_command_==settings_wire_) {
       settings_uncertain_=true; edit_stage_=EDIT_VERIFY; settings_read_retries_=0;
       id(settings_result).publish_state("Write acknowledgement lost; checking actual configuration; write not retried");

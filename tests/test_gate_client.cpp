@@ -35,7 +35,6 @@ struct Number { float state=0; void publish_state(float s) { state=s; } };
 Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
-std::string profile_car_opening_status="",profile_pedestrian_opening_status="";
 int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true;
 Text control_result,poll_health,settings_snapshot,settings_result;
 Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
@@ -612,5 +611,16 @@ int main() {
   tick(c31,1000);c31.request("PED OPEN");gate_lock_state.state="locked";
   acknowledge(c31,"ERROR:READ LIGHT STATUS");
   for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
+  // A lost motion ACK must not stall telemetry for ten reads then reconnect.
+  // Recover read-only, retain a bounded hint, and never replay the movement.
+  reset();car_cover.position=0;ped_cover.position=0;
+  esphome::ble_client::Parent p32;EyeOpenClient c32(false);c32.p=&p32;ready(c32);
+  c32.request("FULL OPEN");acknowledge(c32,"ERROR:READ LIGHT STATUS");
+  for(int i=0;i<2;++i){tick(c32,750);event(c32,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");}
+  assert(p32.disconnections==0 && control_result.state.find("Acknowledgement missing")!=std::string::npos);
+  tick(c32,0);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(c32,"ACK STATUS:PED OPENING,15");tick(c32,500);acknowledge(c32,"ACK STATUS:PED OPENING,30");
+  assert(car_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && ped_cover.position==0);
+  assert(std::count_if(writes.begin(),writes.end(),[](const Write&w){return w.payload=="C=FULL OPEN;src=P9999999";})==1);
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

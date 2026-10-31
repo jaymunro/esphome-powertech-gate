@@ -23,20 +23,15 @@ int main() {
                   "ACK STATUS:FULL CLOSED,0\nACK STATUS:FULL CLOSED,1",
                   "ACK STATUS:FULL OPENED,98\nACK STATUS:FULL OPENED,99"})
    assert(!GateFeedback::parse_reply(bad,s));
- // Explicit model signatures recognise external opening before the open endpoint.
- for (bool pedestrian : {false,true}) {
-  GateFeedback explicit_mode({"PS19001","SINGLE STOPPED",95,0,true,5,"FULL OPENING","PED OPENING"});
-  explicit_mode.connected(0);
-  explicit_mode.accept({"FULL CLOSED",2},16000);explicit_mode.accept({"FULL CLOSED",2},18000);
-  // A stale local hint must lose to a fresh explicit status of the opposite mode.
-  explicit_mode.commanded_open(!pedestrian,19000);
-  const std::string opening=pedestrian?"PED OPENING":"FULL OPENING";
-  assert(!explicit_mode.accept({opening,0},20000));
-  assert(explicit_mode.accept({opening,10},20600));
-  assert(explicit_mode.car()==(pedestrian?"closed":"opening"));
-  assert(explicit_mode.pedestrian()==(pedestrian?"opening":"closed"));
-  assert(explicit_mode.gate()=="open");
- }
+ // Hardware counterexample: car travel can retain PED OPENING after a PED
+ // command. Prefixes alone must not classify external access mode.
+ GateFeedback sticky({"PS19001","SINGLE STOPPED",95,0,true,5});sticky.connected(0);
+ sticky.accept({"PED CLOSED",1},16000);sticky.accept({"PED CLOSED",1},18000);
+ sticky.accept({"PED OPENING",5},20000);sticky.accept({"PED OPENING",14},21000);
+ assert(sticky.car()=="unavailable" && sticky.pedestrian()=="unavailable" && sticky.gate()=="open");
+ sticky.accept({"PED OPENING",98},22000);assert(sticky.pedestrian()=="unavailable");
+ sticky.accept({"PED OPENED",99},23000);assert(sticky.accept({"PED OPENED",99},24000));
+ assert(sticky.car()=="open" && sticky.pedestrian()=="closed");
  GateFeedback f; f.connected(0); assert(!f.available());
  f.event(6000); assert(!f.accept({"PED CLOSED",0},8000));
  assert(!f.accept({"PED CLOSED",0},15000)); assert(f.accept({"PED CLOSED",0},17000));
