@@ -57,3 +57,7 @@ Gate state changed failure semantics from helper Unavailable to native Unknown.
 Update any automation that checks only for Unavailable to reject Unknown too.
 Keep experimental entities out of voice assistants until physical control and
 recovery testing is complete. Explicit close and Stop still need hardware tests.
+
+## Configuration
+
+The settings branch publishes all 19 board parameters under Configuration. Auto-closing is editable; other motor and safety values are read-only. Settings update result reports whether a save was verified, rejected, or uncertain. A missing Bluetooth link leaves last-read configuration values displayed; refresh after recovery. Auto-close editing requires fresh Closed gate feedback, and selecting the current value sends no board write. Existing cover entity IDs and security consumers are unchanged.

@@ -34,7 +34,8 @@ Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
 int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=1; bool profile_supports_pedestrian=true;
-Text control_result,poll_health,settings_snapshot; Number status_successes,unmatched_replies;
+Text control_result,poll_health,settings_snapshot,settings_result;
+Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;
 Number c004_packets; bool control_session=false,gate_listening=false;
 uint32_t c004_count=0,capture_started_ms=0; std::vector<std::string> capture_records;
@@ -78,6 +79,7 @@ struct FakeBinarySensor {
 } gate_binary;
 FakeBinarySensor &gate_state=gate_binary;
 FakeBinarySensor bluetooth_connection;
+#include "../src/gate_settings_generated.inc"
 #include "../src/gate_client_body.inc"
 
 void event(EyeOpenClient &c,esp_gattc_cb_event_t e,int handle=0,const std::string &s="",int status=0) {
@@ -96,6 +98,16 @@ void discover(EyeOpenClient &c) {
 void unlock_without_challenge(EyeOpenClient &c) { event(c,ESP_GATTC_READ_CHAR_EVT,46,"M=0;C=fixture"); tick(c,100); }
 void acknowledge(EyeOpenClient &c,const std::string &reply) {
   event(c,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c,200); event(c,ESP_GATTC_READ_CHAR_EVT,106,reply);
+}
+void ready(EyeOpenClient &c) {
+  c.request("READ STATUS"); discover(c); unlock_without_challenge(c);
+  acknowledge(c,"ACK STATUS:PED CLOSED,0");
+  clock_ms=16000; c.request("READ STATUS"); acknowledge(c,"ACK STATUS:PED CLOSED,0");
+  clock_ms+=1200; c.request("READ STATUS"); acknowledge(c,"ACK STATUS:PED CLOSED,0");
+  assert(gate_binary.valid && !gate_binary.state);
+}
+size_t settings_write_count() {
+  return std::count_if(writes.begin(),writes.end(),[](const Write &w){return w.payload.rfind("C=WRITE FUNCTION,",0)==0;});
 }
 int main() {
   assert(EyeOpenClient::allowed("READ FUNCTION"));
@@ -129,7 +141,7 @@ int main() {
   assert(EyeOpenClient::integer_field("C=99999999999999","C")==-1);
 
   // Motion cannot be written before authentication AND a baseline status reply.
-  reset(); esphome::ble_client::Parent parent; EyeOpenClient client; client.p=&parent;
+  reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
   client.request("PED OPEN"); assert(writes.empty()); discover(client); assert(writes.empty());
   unlock_without_challenge(client); assert(writes.size()==1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   acknowledge(client,"C=ACK STATUS:PED CLOSED,0"); tick(client,50);
@@ -149,7 +161,7 @@ int main() {
   assert(parent.disconnections>0 && !control_session);
 
   // Wrong authentication confirmation prevents every C000 command.
-  reset(); esphome::ble_client::Parent p2; EyeOpenClient c2; c2.p=&p2;
+  reset(); esphome::ble_client::Parent p2; EyeOpenClient c2(false); c2.p=&p2;
   c2.request("FULL OPEN"); discover(c2);
   event(c2,ESP_GATTC_READ_CHAR_EVT,46,"M=1;C=example");
   assert(writes.size()==1 && writes.back().handle==46);
@@ -158,20 +170,20 @@ int main() {
   assert(writes.size()==1 && p2.disconnections==1);
 
   // A stop requested while authenticating replaces the unsent open request.
-  reset(); esphome::ble_client::Parent p3; EyeOpenClient c3; c3.p=&p3;
+  reset(); esphome::ble_client::Parent p3; EyeOpenClient c3(false); c3.p=&p3;
   c3.request("FULL OPEN"); c3.request("STOP"); discover(c3); unlock_without_challenge(c3);
   assert(writes.size()==1 && writes.back().payload=="C=STOP;src=P9999999");
   acknowledge(c3,"C=ACK STOP"); tick(c3,120000); assert(p3.disconnections==1);
 
   // A mismatching old ACK never releases a waiting movement command.
-  reset(); esphome::ble_client::Parent p4; EyeOpenClient c4; c4.p=&p4;
+  reset(); esphome::ble_client::Parent p4; EyeOpenClient c4(false); c4.p=&p4;
   c4.request("PED OPEN"); discover(c4); unlock_without_challenge(c4);
   acknowledge(c4,"C=ACK FULL OPEN");
   assert(writes.size()==1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   for(int i=0;i<3;++i) { tick(c4,750); event(c4,ESP_GATTC_READ_CHAR_EVT,106,"C=ACK FULL OPEN"); }
   assert(writes.size()==1 && p4.disconnections>0);
   // A poll ignores unrelated lines until a matching status arrives; no C000 resend.
-  reset(); esphome::ble_client::Parent p5; EyeOpenClient c5; c5.p=&p5;
+  reset(); esphome::ble_client::Parent p5; EyeOpenClient c5(false); c5.p=&p5;
   c5.request("READ STATUS"); discover(c5); unlock_without_challenge(c5);
   acknowledge(c5,"C=ACK STATUS:PED CLOSED,0");
   c5.request("PED OPEN"); acknowledge(c5,"C=ACK PED OPEN");
@@ -202,7 +214,7 @@ int main() {
   assert(control_result.state=="Acknowledged: PED OPEN");
 
   // Repeated UART mismatches retain the GATT link, retry only status, then recover.
-  reset(); esphome::ble_client::Parent p6; EyeOpenClient c6; c6.p=&p6;
+  reset(); esphome::ble_client::Parent p6; EyeOpenClient c6(false); c6.p=&p6;
   c6.request("READ STATUS"); discover(c6); unlock_without_challenge(c6);
   acknowledge(c6,"C=ACK STATUS:PED CLOSED,0");
   for(int failure=0;failure<4;++failure) {
@@ -216,7 +228,7 @@ int main() {
   assert(control_result.state.empty());
   for(const auto &w:writes) assert(w.payload=="C=READ STATUS;src=P9999999");
   // Stop cannot get stranded behind a background poll whose GATT read times out.
-  reset(); esphome::ble_client::Parent p7; EyeOpenClient c7; c7.p=&p7;
+  reset(); esphome::ble_client::Parent p7; EyeOpenClient c7(false); c7.p=&p7;
   c7.request("READ STATUS"); discover(c7); unlock_without_challenge(c7);
   acknowledge(c7,"C=ACK STATUS:PED CLOSED,0");
   tick(c7,10000); event(c7,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c7,200);
@@ -224,12 +236,12 @@ int main() {
   assert(writes.size()==3 && writes.back().payload=="C=STOP;src=P9999999");
   acknowledge(c7,"C=ACK STOP"); assert(control_result.state=="Acknowledged: STOP");
   // Gate locking is independent of Bluetooth authentication; close and Stop remain allowed.
-  reset(); esphome::ble_client::Parent p8; EyeOpenClient c8; c8.p=&p8;
+  reset(); esphome::ble_client::Parent p8; EyeOpenClient c8(false); c8.p=&p8;
   gate_lock_state.state="locked"; c8.request("PED OPEN");
   assert(writes.empty() && p8.connections==0 && control_result.state.find("Not sent")!=std::string::npos);
   gate_lock_state.state="unavailable"; c8.request("FULL OPEN"); assert(p8.connections==0);
   // Automatic reconnect can only issue READ STATUS, never an old movement command.
-  reset(); esphome::ble_client::Parent p9; EyeOpenClient c9; c9.p=&p9;
+  reset(); esphome::ble_client::Parent p9; EyeOpenClient c9(false); c9.p=&p9;
   monitor_enabled=true; c9.maintenance(); assert(p9.connections==1);
   discover(c9); unlock_without_challenge(c9); acknowledge(c9,"C=ACK STATUS:PED CLOSED,0");
   event(c9,ESP_GATTC_CLOSE_EVT); assert(gate_state_source.state=="unavailable");
@@ -237,10 +249,10 @@ int main() {
   discover(c9); unlock_without_challenge(c9); acknowledge(c9,"C=ACK STATUS:PED CLOSED,0");
   for(const auto &w:writes) assert(w.payload=="C=READ STATUS;src=P9999999");
   c9.request("DISCONNECT"); assert(!monitor_enabled);
-  reset(); esphome::ble_client::Parent p10; EyeOpenClient c10; c10.p=&p10;
+  reset(); esphome::ble_client::Parent p10; EyeOpenClient c10(false); c10.p=&p10;
   profile_supports_pedestrian=false; c10.request("PED OPEN"); assert(p10.connections==0 && writes.empty());
   // Native covers follow confirmed feedback, never command acknowledgements.
-  reset(); car_cover={}; ped_cover={}; esphome::ble_client::Parent p11; EyeOpenClient c11; c11.p=&p11;
+  reset(); car_cover={}; ped_cover={}; esphome::ble_client::Parent p11; EyeOpenClient c11(false); c11.p=&p11;
   c11.request("READ STATUS"); discover(c11); unlock_without_challenge(c11);
   event(c11,ESP_GATTC_CONNECT_EVT); assert(bluetooth_connection.valid && bluetooth_connection.state);
   acknowledge(c11,"ACK STATUS:PED CLOSED,0");
@@ -263,21 +275,21 @@ int main() {
   assert(!bluetooth_connection.state);
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_IDLE);
   // A failed GATT read still tears down the link; only text mismatches are retained.
-  reset(); esphome::ble_client::Parent p13; EyeOpenClient c13; c13.p=&p13;
+  reset(); esphome::ble_client::Parent p13; EyeOpenClient c13(false); c13.p=&p13;
   c13.request("READ STATUS"); discover(c13); unlock_without_challenge(c13);
   acknowledge(c13,"ACK STATUS:PED CLOSED,0");
   tick(c13,10000); event(c13,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c13,200);
   event(c13,ESP_GATTC_READ_CHAR_EVT,106,"",1); assert(p13.disconnections==1);
   // An explicit CLOSED,1 reply must close both native access covers too.
   reset(); car_cover.position=1; ped_cover.position=1;
-  esphome::ble_client::Parent p12; EyeOpenClient c12; c12.p=&p12;
+  esphome::ble_client::Parent p12; EyeOpenClient c12(false); c12.p=&p12;
   c12.request("READ STATUS"); discover(c12); unlock_without_challenge(c12);
   acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
   // Closed polling is 1s; notifications prompt a read without overlapping GATT requests.
-  reset(); esphome::ble_client::Parent p14; EyeOpenClient c14; c14.p=&p14;
+  reset(); esphome::ble_client::Parent p14; EyeOpenClient c14(false); c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
@@ -332,7 +344,7 @@ int main() {
   assert(gate_binary.valid && !gate_binary.state && ped_cover.position==0 && car_cover.position==0);
 
   // The software lock is checked again after a command queued behind a poll.
-  reset(); esphome::ble_client::Parent p15; EyeOpenClient c15; c15.p=&p15;
+  reset(); esphome::ble_client::Parent p15; EyeOpenClient c15(false); c15.p=&p15;
   c15.request("READ STATUS"); discover(c15); unlock_without_challenge(c15); acknowledge(c15,"ACK STATUS:PED CLOSED,0");
   tick(c15,10000); c15.request("PED OPEN"); gate_lock_state.state="locked";
   acknowledge(c15,"ACK STATUS:PED CLOSED,0"); tick(c15,50);
@@ -341,7 +353,7 @@ int main() {
   // Manual settings reads share the serialized transport but do not act like
   // movement ACKs, invalidate good feedback, or publish truncated snapshots.
   reset(); settings_snapshot.state.clear();
-  esphome::ble_client::Parent p16; EyeOpenClient c16; c16.p=&p16;
+  esphome::ble_client::Parent p16; EyeOpenClient c16(false); c16.p=&p16;
   c16.request("READ STATUS"); discover(c16); unlock_without_challenge(c16);
   acknowledge(c16,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c16.request("READ STATUS"); acknowledge(c16,"ACK STATUS:PED CLOSED,0");
@@ -356,5 +368,58 @@ int main() {
   for(size_t i=after_settings;i<writes.size();++i) assert(writes[i].payload=="C=READ STATUS;src=P9999999");
   event(c16,ESP_GATTC_CLOSE_EVT); tick(c16,100000);
   for(const auto &w:writes) assert(w.payload.find("WRITE FUNCTION")==std::string::npos);
-  puts("Protocol and transaction checks passed, including unrelated replies, bounded polling/backoff/recovery and preserved movement results (mock Bluetooth/hash). ");
+  // Synthetic complete configuration, not a captured household payload.
+  const std::string base="ACK READ FUNCTION,1:1,2:01,3:01,4:1,5:1,6:1,7:0,8:0,9:0,A:1,B:0,C:0,D:0,E:0,F:0,G:0,H:0,I:1,J:0,Z:00aF;src=P9999999";
+  auto changed=base; changed.replace(changed.find("9:0"),3,"9:2");
+  GateSettings settings; assert(settings.decode(base));
+  assert(settings.auto_close_command(2)=="WRITE FUNCTION,"+changed.substr(18,changed.find(';')-18));
+  assert(settings.auto_close_command(-1).empty() && settings.auto_close_command(9).empty());
+  assert(settings.matches_auto_close_change(settings,0));
+  assert(settings.decode(base+";future=keep") && settings.auto_close_command(2).empty());
+  for(const auto &bad:std::vector<std::string>{base.substr(0,base.find(';'))+",",base.substr(0,base.find(",J:")),"ACK READ FUNCTION,1:3",base+char(0)}) {
+    assert(!settings.decode(bad));
+  }
+  // Successful save: exactly one guarded write, followed by full readback.
+  reset(); esphome::ble_client::Parent p17; EyeOpenClient c17(false); c17.p=&p17; ready(c17);
+  c17.request_auto_close(2); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c17,base); assert(settings_write_count()==0); tick(c17,50);
+  assert(settings_write_count()==1 && writes.back().payload=="C=WRITE FUNCTION,"+changed.substr(18));
+  assert(setting_9.state!="10 sec"); // No optimistic selection.
+  acknowledge(c17,"ACK FUNCTION;src=P9999999"); tick(c17,50);
+  assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c17,changed);
+  assert(setting_9.state=="10 sec" && settings_result.state.find("verified")!=std::string::npos);
+  assert(settings_write_count()==1 && gate_binary.valid && !gate_binary.state);
+  // Same-value selection does not write the board at all.
+  c17.request_auto_close(2); acknowledge(c17,changed);
+  assert(settings_write_count()==1 && settings_result.state.find("no write needed")!=std::string::npos);
+  // Mismatched readback reports actual values and never retries a write.
+  reset(); esphome::ble_client::Parent p18; EyeOpenClient c18(false); c18.p=&p18; ready(c18);
+  c18.request_auto_close(2); acknowledge(c18,base); tick(c18,50);
+  acknowledge(c18,"ACK FUNCTION"); tick(c18,50); acknowledge(c18,base);
+  assert(settings_write_count()==1 && setting_9.state=="Function OFF");
+  assert(settings_result.state.find("Readback mismatch")!=std::string::npos);
+  // Disconnect after submission cannot replay settings after recovery.
+  reset(); esphome::ble_client::Parent p19; EyeOpenClient c19(false); c19.p=&p19; ready(c19);
+  c19.request_auto_close(2); acknowledge(c19,base); tick(c19,50);
+  event(c19,ESP_GATTC_CLOSE_EVT); clock_ms+=100000; c19.maintenance();
+  assert(settings_write_count()==1);
+  // A Stop or movement event before submission cancels the pending write.
+  for(bool stop:{false,true}) {
+    reset(); esphome::ble_client::Parent p20; EyeOpenClient c20(false); c20.p=&p20; ready(c20);
+    c20.request_auto_close(2); acknowledge(c20,base);
+    if(stop) c20.request("STOP"); else event(c20,ESP_GATTC_NOTIFY_EVT,42,"Opening");
+    tick(c20,50); assert(settings_write_count()==0);
+    if(stop) assert(writes.back().payload=="C=STOP;src=P9999999");
+  }
+  // Unknown metadata is readable, but cannot be silently lost by an edit.
+  reset(); esphome::ble_client::Parent p21; EyeOpenClient c21(false); c21.p=&p21; ready(c21);
+  c21.request_auto_close(2); acknowledge(c21,base+";future=keep"); tick(c21,50);
+  assert(settings_write_count()==0 && settings_result.state.find("unknown extension")!=std::string::npos);
+  // Automatic post-connect refresh is read-only and follows confirmed status.
+  reset(); esphome::ble_client::Parent p22; EyeOpenClient c22; c22.p=&p22; ready(c22);
+  tick(c22,0); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c22,base); assert(setting_1.state=="Overcurrent" && setting_9.state=="Function OFF");
+  assert(settings_write_count()==0);
+  puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

@@ -16,7 +16,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev2"
+    version: "0.9.0-dev3"
   on_boot:
     priority: -100
     then:
@@ -26,6 +26,7 @@ esphome:
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
+          id(gate_settings_change) = [client](int index) { client->request_auto_close(index); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
       - script.execute: gate_scan
 
@@ -55,6 +56,9 @@ wifi:
   password: !secret wifi_password
 
 globals:
+  - id: gate_settings_change
+    type: std::function<void(int)>
+    restore_value: false
   - id: require_gate_unlock
     type: bool
     restore_value: false
@@ -141,7 +145,15 @@ switch:
           id(monitor_enabled) = false;
           if (id(gate_request)) id(gate_request)("DISCONNECT");
 
+@@SETTINGS_SELECT@@
+
 text_sensor:
+@@SETTINGS_TEXT_SENSORS@@
+  - platform: template
+    id: settings_result
+    name: Settings update result
+    entity_category: config
+    update_interval: never
   - platform: template
     id: settings_snapshot
     internal: true

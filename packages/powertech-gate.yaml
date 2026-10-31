@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev2"
+    version: "0.9.0-dev3"
   on_boot:
     priority: -100
     then:
@@ -131,10 +131,116 @@ esphome:
             void invalidate() { valid_=false; candidate_.clear(); physical_=car_=pedestrian_="unavailable"; }
           };
           
+          // Generated field options come from settings/ps19001.json.
+          class GateSettings {
+           public:
+            struct Field { char label; int offset; bool decimal; std::vector<std::string> options; };
+            struct Record { char label; std::string raw; };
+            static const std::vector<Field> &fields() { static const std::vector<Field> definitions = {
+              {'1', 1, false, {"Overcurrent", "Limit Switch", "Hall Sensor"}},
+              {'2', 1, true, {"2 A", "3 A", "4 A", "5 A"}},
+              {'3', 1, true, {"2 A", "3 A", "4 A", "5 A"}},
+              {'4', 1, false, {"40 %", "50 %", "75 %", "100 %"}},
+              {'5', 1, false, {"40 %", "50 %", "75 %", "100 %"}},
+              {'6', 1, false, {"40 %", "50 %", "60 %", "70 %"}},
+              {'7', 0, false, {"0 sec", "2 sec", "5 sec", "10 sec", "15 sec", "20 sec", "25 sec", "35 sec", "45 sec", "55 sec"}},
+              {'8', 0, false, {"0 sec", "2 sec", "5 sec", "10 sec", "15 sec", "20 sec", "25 sec", "35 sec", "45 sec", "55 sec"}},
+              {'9', 0, false, {"Function OFF", "3 sec", "10 sec", "20 sec", "40 sec", "60 sec", "120 sec", "180 sec", "300 sec"}},
+              {'A', 1, false, {"Mode 1", "Mode 2", "Mode 3", "Mode 4"}},
+              {'B', 0, false, {"Function OFF", "Function ON"}},
+              {'C', 0, false, {"Blinks whenstarts moving", "Blinks 3 seconds before starts moving"}},
+              {'D', 0, false, {"Function OFF", "Function ON"}},
+              {'E', 0, false, {"Function OFF", "Function ON"}},
+              {'F', 0, false, {"Function OFF", "Function ON"}},
+              {'G', 0, false, {"Standard Gate Opening", "Release Gate Tension before Opening (Gate Reversing for 0.25s)"}},
+              {'H', 0, false, {"When Terminal Block is at Top", "When Terminal Block is at Bottom"}},
+              {'I', 1, false, {"Single Gate", "Dual Gate"}},
+              {'J', 0, false, {"Function OFF", "0.1 sec", "0.2 sec", "0.3 sec", "0.4 sec", "0.5 sec", "0.6 sec"}},
+            }; return definitions; }
+            bool decode(const std::string &input) {
+              valid_=false; records_.clear(); values_.clear(); suffix_.clear();
+              std::string raw=input.rfind("C=",0)==0 ? input.substr(2) : input;
+              if(raw.size()<19 || raw.size()>2048 || raw.substr(0,17)!="ACK READ FUNCTION" ||
+                 (raw[17]!=',' && raw[17]!=':') || !std::all_of(raw.begin(),raw.end(),[](unsigned char c){return c>=32 && c<=126;})) return false;
+              const auto semicolon=raw.find(';');
+              if(semicolon!=std::string::npos) suffix_=raw.substr(semicolon);
+              const std::string body=raw.substr(18,semicolon==std::string::npos ? semicolon : semicolon-18);
+              size_t start=0;
+              while(start<body.size()) {
+                const auto end=body.find(',',start);
+                const auto token=body.substr(start,end==std::string::npos ? end : end-start);
+                if(token.size()<3 || token.size()>10 || token[1]!=':' ||
+                   (!(token[0]>='0' && token[0]<='9') && !(token[0]>='A' && token[0]<='Z'))) return false;
+                const auto value=token.substr(2);
+                if(!std::all_of(value.begin(),value.end(),[](char c){return (c>='0'&&c<='9')||(c>='A'&&c<='F')||(c>='a'&&c<='f');})) return false;
+                for(const auto &record:records_) if(record.label==token[0]) return false;
+                records_.push_back({token[0],value});
+                if(records_.size()>36) return false;
+                if(end==std::string::npos) break;
+                start=end+1; if(start==body.size()) return false;
+              }
+              for(const auto &field:fields()) {
+                const Record *record=nullptr;
+                for(const auto &r:records_) if(r.label==field.label) record=&r;
+                if(!record || record->raw.size()!=(field.decimal?2u:1u)) return false;
+                if(field.decimal && !std::all_of(record->raw.begin(),record->raw.end(),[](char c){return c>='0'&&c<='9';})) return false;
+                const int index=int(strtoul(record->raw.c_str(),nullptr,field.decimal?10:16))-field.offset;
+                if(index<0 || size_t(index)>=field.options.size()) return false;
+                if(field.label=='1' && index==2) return false; // Hall current schema is different.
+                values_.push_back(index);
+              }
+              valid_=true; return true;
+            }
+            bool valid() const { return valid_; }
+            int auto_close_index() const { return valid_ ? values_[8] : -1; }
+            std::string value(size_t index) const { return valid_ ? fields()[index].options[values_[index]] : "Unknown"; }
+            void publish() const {
+              if(!valid_) return;
+              id(setting_1).publish_state(value(0));
+              id(setting_2).publish_state(value(1));
+              id(setting_3).publish_state(value(2));
+              id(setting_4).publish_state(value(3));
+              id(setting_5).publish_state(value(4));
+              id(setting_6).publish_state(value(5));
+              id(setting_7).publish_state(value(6));
+              id(setting_8).publish_state(value(7));
+              id(setting_9).publish_state(value(8));
+              id(setting_a).publish_state(value(9));
+              id(setting_b).publish_state(value(10));
+              id(setting_c).publish_state(value(11));
+              id(setting_d).publish_state(value(12));
+              id(setting_e).publish_state(value(13));
+              id(setting_f).publish_state(value(14));
+              id(setting_g).publish_state(value(15));
+              id(setting_h).publish_state(value(16));
+              id(setting_i).publish_state(value(17));
+              id(setting_j).publish_state(value(18));
+            }
+            std::string auto_close_command(int index) const {
+              // Preserve every record exactly except 9. Unknown metadata may be an
+              // extension: refuse a write rather than silently discard it.
+              if(!valid_ || index<0 || index>8 || (!suffix_.empty() && suffix_!=";src=P9999999")) return "";
+              std::string out="WRITE FUNCTION";
+              for(const auto &r:records_) out+=","+std::string(1,r.label)+":"+(r.label=='9'?std::string(1,char('0'+index)):r.raw);
+              return out.size()<=400 ? out : "";
+            }
+            bool matches_auto_close_change(const GateSettings &before,int desired) const {
+              if(!valid_ || !before.valid_ || auto_close_index()!=desired || records_.size()!=before.records_.size() || suffix_!=before.suffix_) return false;
+              for(size_t i=0;i<records_.size();++i)
+                if(records_[i].label!=before.records_[i].label || (records_[i].label!='9' && records_[i].raw!=before.records_[i].raw)) return false;
+              return true;
+            }
+           private:
+            bool valid_{false};
+            std::vector<Record> records_;
+            std::vector<int> values_;
+            std::string suffix_;
+          };
           // Embedded in the private ESPHome on_boot lambda. No credentials in this file.
           class EyeOpenClient : public esphome::ble_client::BLEClientNode {
            public:
-            EyeOpenClient() {
+            explicit EyeOpenClient(bool auto_settings=true) {
+              auto_settings_=auto_settings; settings_due_=auto_settings;
               this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
               feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
                 id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
@@ -148,11 +254,25 @@ esphome:
                 request("READ STATUS");  // Reconnection can only request status, never replay motion.
               }
             }
+            void request_auto_close(int index) {
+              if(id(profile_model)!="PS19001" || index<0 || index>8 || edit_stage_!=EDIT_IDLE ||
+                 !feedback_.available() || feedback_.gate()!="closed" || !authenticated_ ||
+                 (busy_ && !(background_poll_ && wire_command_=="READ STATUS" && user_command_.empty()))) {
+                id(settings_result).publish_state("Not sent: wait for a confirmed closed gate and idle connection"); return;
+              }
+              desired_auto_close_=index; edit_stage_=EDIT_BASELINE;
+              id(settings_result).publish_state("Reading fresh configuration before changing auto-close");
+              request("READ FUNCTION");
+            }
             void request(const std::string &command) {
+              if(edit_stage_!=EDIT_IDLE && command!="READ FUNCTION" && command!="READ STATUS" && command!="STOP" && command!="DISCONNECT") {
+                status("Settings change active; wait for verified readback"); return;
+              }
               if (command == "READ FUNCTION" && id(profile_model) != "PS19001") {
                 status("Settings read not validated for this controller profile"); return;
               }
               if (command == "DISCONNECT") {
+                cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after disconnect; refresh settings; not retried" : "Settings cancelled by disconnect; not retried");
                 id(monitor_enabled) = false;
                 feedback_.disconnected(); publish_feedback();
                 user_command_.clear(); urgent_stop_ = false;
@@ -169,12 +289,14 @@ esphome:
               if (!allowed(command)) { status("Rejected: command is not allowlisted"); return; }
               if (busy_) {
                 if (command == "STOP") {
+                  cancel_settings("Interrupted by Stop; settings outcome may be uncertain; refresh settings");
                   urgent_stop_ = true;
                   status("Stop queued with priority after the active Bluetooth operation");
-                } else if (background_poll_ && wire_command_ == "READ STATUS" &&
+                } else if (((background_poll_ && wire_command_ == "READ STATUS") ||
+                            (wire_command_=="READ FUNCTION" && edit_stage_==EDIT_IDLE)) &&
                            user_command_.empty() && command != "READ STATUS") {
                   user_command_=command;
-                  status("Command queued after the in-flight status read");
+                  status("Command queued after the in-flight read");
                 } else status("Busy; command was not queued or sent");
                 return;
               }
@@ -201,6 +323,9 @@ esphome:
               const uint32_t now = millis();
               feedback_.tick(now); publish_feedback();
               if (phase_ == IDLE_CONNECTED) {
+                if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.available() && id(profile_model)=="PS19001") {
+                  settings_due_=false; busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
+                }
                 if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
                   status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
                 }
@@ -229,9 +354,13 @@ esphome:
                                      esp_ble_gattc_cb_param_t *param) override {
               if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
               if (event == ESP_GATTC_CLOSE_EVT) {
+                const bool settings_active=edit_stage_!=EDIT_IDLE;
+                cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after Bluetooth loss; refresh settings; not retried" : "Bluetooth disconnected before settings write; not retried");
+                settings_due_=auto_settings_;
                 ESP_LOGW("gate_link", "Bluetooth closed: reason=%d phase=%d poll_failures=%u",
                          int(param->close.reason), int(phase_), poll_failures_);
                 id(bluetooth_connection).publish_state(false);
+                if(!settings_active) id(settings_result).publish_state("Bluetooth disconnected; values retained from last read");
                 const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
                 feedback_.disconnected(); publish_feedback();
                 next_reconnect_ = millis() + reconnect_delay_;
@@ -331,8 +460,13 @@ esphome:
                       std::string snapshot;
                       if (function_reply(reply, snapshot)) {
                         id(settings_snapshot).publish_state(snapshot);
-                        status("Settings snapshot captured; parameter decoding not yet validated");
+                        accept_settings(snapshot);
                       }
+                    } else if(edit_stage_==EDIT_WRITE && finished==settings_wire_) {
+                      edit_stage_=EDIT_VERIFY;
+                      id(settings_result).publish_state("Write acknowledged; verifying full configuration readback");
+                    } else if(finished.rfind("WRITE FUNCTION,",0)==0) {
+                      id(settings_result).publish_state("Write acknowledged after interruption; refresh settings");
                     } else {
                       id(control_result).publish_state("Acknowledged: " + finished);
                       if (finished == "PED OPEN" || finished == "FULL OPEN")
@@ -342,7 +476,7 @@ esphome:
                     }
                     wire_command_.clear();
                     status("Acknowledged: " + finished);
-                    if (urgent_stop_ || !user_command_.empty()) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
+                    if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
                     else { busy_ = false; phase_ = IDLE_CONNECTED; }
                   } else if (urgent_stop_ && wire_command_ != "STOP") {
                     wire_command_.clear(); phase_ = COMMAND_WAIT; deadline_ = millis() + 50;
@@ -363,6 +497,10 @@ esphome:
                      c == "PED OPEN" || c == "PED CLOSE" || c == "STOP";
             }
             static bool matching_ack(const std::string &reply, const std::string &command) {
+              if(command.rfind("WRITE FUNCTION,",0)==0) {
+                const auto line=reply.substr(0,reply.find_first_of("\r\n"));
+                return line=="ACK FUNCTION" || line.rfind("ACK FUNCTION;",0)==0;
+              }
               if (command == "READ FUNCTION") { std::string snapshot; return function_reply(reply, snapshot); }
               if (command == "READ STATUS") {
                 GateFeedback::Sample sample; return GateFeedback::parse_reply(reply, sample);
@@ -444,6 +582,40 @@ esphome:
               COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED };
             Phase phase_{IDLE};
             GateFeedback feedback_;
+            enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
+            EditStage edit_stage_{EDIT_IDLE};
+            int desired_auto_close_{-1};
+            bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false};
+            std::string settings_wire_;
+            GateSettings edit_baseline_;
+            void cancel_settings(const std::string &message) {
+              if(edit_stage_!=EDIT_IDLE) id(settings_result).publish_state(message);
+              edit_stage_=EDIT_IDLE; desired_auto_close_=-1; settings_wire_.clear(); settings_write_sent_=false;
+            }
+            void accept_settings(const std::string &snapshot) {
+              settings_due_=false;
+              GateSettings settings;
+              if(!settings.decode(snapshot)) {
+                cancel_settings("Invalid settings snapshot; no further write scheduled");
+                id(settings_result).publish_state("Unrecognized settings values; configuration entities not updated"); return;
+              }
+              // During a write, publish the selector only after verified readback.
+              if(edit_stage_!=EDIT_BASELINE) settings.publish();
+              if(edit_stage_==EDIT_BASELINE) {
+                if(settings.auto_close_index()==desired_auto_close_) {
+                  settings.publish(); cancel_settings("Already set; no write needed"); return;
+                }
+                edit_baseline_=settings;
+                settings_wire_=settings.auto_close_command(desired_auto_close_);
+                if(settings_wire_.empty() || !feedback_.available() || feedback_.gate()!="closed") {
+                  settings.publish(); cancel_settings("Not sent: unknown extension or gate no longer confirmed closed"); return;
+                }
+                edit_stage_=EDIT_WRITE;
+              } else if(edit_stage_==EDIT_VERIFY) {
+                const bool matches=settings.matches_auto_close_change(edit_baseline_,desired_auto_close_);
+                cancel_settings(matches ? "Auto-close saved and complete readback verified" : "Readback mismatch; actual values shown; not retried");
+              } else id(settings_result).publish_state("Configuration read and validated");
+            }
             bool auth_blocked_{false};
             uint16_t event_handle_{0};
             uint32_t next_reconnect_{0}, reconnect_delay_{15000};
@@ -490,6 +662,7 @@ esphome:
             static bool due(uint32_t now, uint32_t target) { return int32_t(now - target) >= 0; }
             void status(const std::string &message) { status_text_ = message; id(command_status).publish_state(message); }
             void fail(const std::string &message) {
+              cancel_settings(settings_write_sent_ ? "Settings outcome uncertain; refresh settings; not retried" : "Settings change failed before write; not retried");
               if (message.find("Authentication was not confirmed") != std::string::npos ||
                   message.find("result 14") != std::string::npos || message.find("result 19") != std::string::npos)
                 auth_blocked_ = true;  // No unattended repeated PIN attempts after rejection.
@@ -536,11 +709,17 @@ esphome:
             }
             void next_command() {
               if (!authenticated_) { fail("Authentication required; no command sent"); return; }
-              if (urgent_stop_) { wire_command_ = "STOP"; urgent_stop_ = false; user_command_.clear(); }
+              if (urgent_stop_) { cancel_settings("Interrupted by Stop; refresh settings"); wire_command_ = "STOP"; urgent_stop_ = false; user_command_.clear(); }
+              else if(edit_stage_==EDIT_WRITE) {
+                if(!feedback_.available() || feedback_.gate()!="closed" || settings_wire_.empty()) {
+                  cancel_settings("Not sent: gate no longer confirmed closed"); busy_=false; phase_=IDLE_CONNECTED; return;
+                }
+                wire_command_=settings_wire_;
+              } else if(edit_stage_==EDIT_VERIFY) wire_command_="READ FUNCTION";
               else if (baseline_needed_ && user_command_ != "READ STATUS") {
                 wire_command_ = "READ STATUS"; baseline_needed_ = false;
               } else { wire_command_ = user_command_; user_command_.clear(); }
-              if (!allowed(wire_command_)) { fail("Invalid command; nothing sent"); return; }
+              if (!allowed(wire_command_) && !(edit_stage_==EDIT_WRITE && wire_command_==settings_wire_)) { fail("Invalid command; nothing sent"); return; }
               if ((wire_command_ == "PED OPEN" || wire_command_ == "FULL OPEN") &&
                   id(require_gate_unlock) && id(gate_lock_state).state != "unlocked") {
                 id(control_result).publish_state("Not sent: gate lock changed while command was queued");
@@ -549,6 +728,14 @@ esphome:
               write_command();
             }
             void write_command() {
+              if(wire_command_.rfind("WRITE FUNCTION",0)==0) {
+                if(edit_stage_!=EDIT_WRITE || settings_write_sent_ || wire_command_!=settings_wire_ ||
+                   !feedback_.available() || feedback_.gate()!="closed") {
+                  fail("Settings write rejected by transaction guard"); return;
+                }
+                settings_write_sent_=true;
+                id(settings_result).publish_state("Saving auto-close; waiting for acknowledgement");
+              }
               phase_ = COMMAND_WRITE; deadline_ = millis() + 4000; write_confirmed_ = false;
               status("Sending: " + wire_command_);
               if (wire_command_ == "READ STATUS") { status_due_=false; id(poll_health).publish_state("Requesting status"); }
@@ -561,6 +748,7 @@ esphome:
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
+          id(gate_settings_change) = [client](int index) { client->request_auto_close(index); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
       - script.execute: gate_scan
 
@@ -590,6 +778,9 @@ wifi:
   password: !secret wifi_password
 
 globals:
+  - id: gate_settings_change
+    type: std::function<void(int)>
+    restore_value: false
   - id: require_gate_unlock
     type: bool
     restore_value: false
@@ -676,7 +867,126 @@ switch:
           id(monitor_enabled) = false;
           if (id(gate_request)) id(gate_request)("DISCONNECT");
 
+select:
+  - platform: template
+    id: setting_9
+    name: Auto-closing
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "3 sec"
+      - "10 sec"
+      - "20 sec"
+      - "40 sec"
+      - "60 sec"
+      - "120 sec"
+      - "180 sec"
+      - "300 sec"
+    set_action:
+      - lambda: |-
+          const auto index = id(setting_9).index_of(x);
+          if (index.has_value() && id(gate_settings_change)) id(gate_settings_change)(int(index.value()));
+
+
 text_sensor:
+  - platform: template
+    id: setting_1
+    name: "Motor type"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_2
+    name: "Overcurrent when opening"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_3
+    name: "Overcurrent when closing"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_4
+    name: "Motor speed when opening"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_5
+    name: "Motor speed when closing"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_6
+    name: "Deceleration speed"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_7
+    name: "Time gap b/w dual gates (opening)"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_8
+    name: "Time gap b/w dual gates (closing)"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_a
+    name: "Safety Device Function Mode"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_b
+    name: "Pedestrian mode"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_c
+    name: "Flashing light"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_d
+    name: "Photocell activation"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_e
+    name: "Photocell 2 activation"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_f
+    name: "Alarm Buzzer"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_g
+    name: "Electric latch mode"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_h
+    name: "LED direction"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_i
+    name: "Dual / Single gate"
+    entity_category: config
+    update_interval: never
+  - platform: template
+    id: setting_j
+    name: "Over current reverses duration when closing"
+    entity_category: config
+    update_interval: never
+
+  - platform: template
+    id: settings_result
+    name: Settings update result
+    entity_category: config
+    update_interval: never
   - platform: template
     id: settings_snapshot
     internal: true

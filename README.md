@@ -109,28 +109,42 @@ Stop retains priority and the software lock is rechecked before a queued open.
 
 ## Controller definitions
 
-### Experimental settings snapshot (settings-readonly branch)
+### Configuration entities (settings-readonly branch)
 
-The PS19001 profile has an optional **Read controller settings** configuration
-button, disabled by default. It sends one serialized legacy `READ FUNCTION`
-request using the existing authenticated connection. It works while the HA
-software gate lock is locked because it cannot move the gate.
+All 19 PS19001 parameters are native ESPHome configuration entities. Eighteen
+are read-only text sensors; **Auto-closing** is a native select with the app's
+Off and timer choices. The select remains unknown at startup until a validated
+controller read arrives; it never restores a presumed setting from flash.
 
-The complete response stays internal and is logged in numbered `gate_settings`
-chunks. Unknown fields are preserved. Capturing a reply does not validate its
-parameter meanings or indicate that any settings were saved. No parameter write,
-learning, reset or alternate-protocol commands are allowlisted. This experimental
-branch does not yet expose editable settings, and the request is never scheduled
-as part of automatic polling or reconnect recovery.
+Configuration is refreshed after connection/status synchronization, or with
+**Read controller settings** (optional, disabled by default in the package).
+Values are the last validated read, not a continuous settings stream. After a
+Bluetooth outage, **Settings update result** explains that retained values may
+be stale. No HA helpers or MQTT discovery are needed.
+
+An auto-close change requires a connected, confirmed closed gate. It reads the
+complete configuration afresh, changes only field 9, submits one guarded legacy
+`WRITE FUNCTION` command, waits for `ACK FUNCTION`, then reads back every field.
+The selector displays the controller readback; a mismatch reports actual values
+without retrying the write. Selecting the current value makes no board write.
+Stop or a newly unconfirmed gate can cancel a pending save. A disconnect after
+submission leaves the outcome uncertain; refresh before trying again.
+
+Unknown parameter records are retained byte-for-byte. Unknown metadata suffixes,
+malformed/incomplete snapshots and Hall Sensor mode block editing. Motor/safety
+parameters are read-only; learning, reset, alternative-protocol and arbitrary
+UART commands remain blocked. Only the constructed in-progress auto-close
+transaction can submit a configuration write. No write is scheduled on boot or
+reconnect. Board write/readback must still be physically validated on each new
+controller/firmware; host transaction tests use simulated Bluetooth.
 
 The PS19001/P3.6 controller returns `ACK READ FUNCTION,` followed by labeled
-fields. The capture matcher also accepts the colon separator. The offline
-inspection schema is in `settings/ps19001.json`; decode a saved ACK line with
-`python tools/read_settings.py /path/to/snapshot.txt`. It checks all 19 required
-fields, numeric formats and option ranges, preserves unknown fields and suffixes,
-and refuses Hall Sensor mode until its different current schema is defined.
-The supplied schema was compared with a live PS19001/P3.6 read; other firmware
-still needs validation. The decoder does not implement a configuration write.
+fields. The matcher also accepts the colon separator. The model schema is in
+`settings/ps19001.json`; inspect a saved ACK with
+`python tools/read_settings.py /path/to/snapshot.txt`. It validates all 19 fields,
+numeric formats and option ranges. Field definitions generate both native YAML
+entities and the firmware decoder. Extend controller support with a validated
+model/schema and transport tests, rather than broadening the command allowlist.
 
 A definition is a small JSON file under `models/`, with its supported transport,
 status signatures, position semantics, pedestrian capability and validation
