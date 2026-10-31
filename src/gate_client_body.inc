@@ -85,7 +85,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     const uint32_t now = millis();
     feedback_.tick(now); publish_feedback();
     if (phase_ == IDLE_CONNECTED) {
-      if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.available() && id(profile_model)=="PS19001") {
+      if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.available() && feedback_.gate()=="closed" &&
+         uint32_t(now-last_poll_)>=500 && id(profile_model)=="PS19001") {
         settings_due_=false; busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
       }
       if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
@@ -97,6 +98,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       return;
     }
     if (phase_ == AUTH_READ_WAIT && due(now, deadline_)) { read_auth(false); return; }
+    if (phase_ == QUIET_WAIT && due(now,deadline_)) {
+      if(urgent_stop_) next_command(); else write_command(); return;
+    }
     if (phase_ == AUTH_VERIFY_WAIT && due(now, deadline_)) { read_auth(true); return; }
     if (phase_ == COMMAND_WAIT && due(now, deadline_)) { next_command(); return; }
     if (phase_ == REPLY_WAIT && due(now, deadline_)) {
@@ -210,6 +214,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
         id(status_reply).publish_state(reply.substr(0, 250));
         if (write_confirmed_ && matching_ack(reply, wire_command_)) {
+          last_uart_reply_=millis();
           const auto finished = wire_command_;
           if (finished == "READ STATUS") {
             last_poll_ = millis(); poll_interval_ = 1000; poll_failures_ = 0; reconnect_delay_ = 15000;
@@ -242,7 +247,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
           else { busy_ = false; phase_ = IDLE_CONNECTED; }
         } else if (urgent_stop_ && wire_command_ != "STOP") {
           wire_command_.clear(); phase_ = COMMAND_WAIT; deadline_ = millis() + 50;
-        } else if (++read_attempts_ < (wire_command_ == "READ STATUS" ? 3u : 10u)) {
+        } else if (++read_attempts_ < ((wire_command_ == "READ STATUS" || wire_command_ == "READ FUNCTION") ? 3u : 10u)) {
           if (wire_command_ == "READ STATUS") {
             id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
             id(unmatched_replies).publish_state(++unmatched_replies_);
@@ -341,7 +346,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
  private:
   enum Phase { IDLE, CONNECTING, SUBSCRIBING, AUTH_READ_WAIT, AUTH_READ,
     AUTH_WRITE, AUTH_VERIFY_WAIT, AUTH_VERIFY_READ, COMMAND_WAIT,
-    COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED };
+    COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED, QUIET_WAIT };
   Phase phase_{IDLE};
   GateFeedback feedback_;
   enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
@@ -349,6 +354,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   int desired_auto_close_{-1};
   bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false};
   std::string settings_wire_;
+  uint32_t last_uart_reply_{0};
   GateSettings edit_baseline_;
   void cancel_settings(const std::string &message) {
     if(edit_stage_!=EDIT_IDLE) id(settings_result).publish_state(message);
@@ -424,6 +430,15 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   static bool due(uint32_t now, uint32_t target) { return int32_t(now - target) >= 0; }
   void status(const std::string &message) { status_text_ = message; id(command_status).publish_state(message); }
   void fail(const std::string &message) {
+    if(wire_command_=="READ FUNCTION" && phase_==REPLY_READ &&
+       message=="No matching UART acknowledgement; command outcome uncertain; not retried") {
+      const bool submitted=settings_write_sent_;
+      cancel_settings(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; no configuration write sent");
+      id(settings_result).publish_state(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; refresh settings to try again");
+      settings_due_=false; wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+      if(urgent_stop_ || !user_command_.empty()) { busy_=true; phase_=COMMAND_WAIT; deadline_=millis()+50; }
+      return;
+    }
     cancel_settings(settings_write_sent_ ? "Settings outcome uncertain; refresh settings; not retried" : "Settings change failed before write; not retried");
     if (message.find("Authentication was not confirmed") != std::string::npos ||
         message.find("result 14") != std::string::npos || message.find("result 19") != std::string::npos)
@@ -490,6 +505,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     write_command();
   }
   void write_command() {
+    if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
+      phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;
+    }
     if(wire_command_.rfind("WRITE FUNCTION",0)==0) {
       if(edit_stage_!=EDIT_WRITE || settings_write_sent_ || wire_command_!=settings_wire_ ||
          !feedback_.available() || feedback_.gate()!="closed") {

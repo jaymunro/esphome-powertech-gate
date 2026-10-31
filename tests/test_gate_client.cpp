@@ -359,7 +359,7 @@ int main() {
   clock_ms=16000; c16.request("READ STATUS"); acknowledge(c16,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c16.request("READ STATUS"); acknowledge(c16,"ACK STATUS:PED CLOSED,0");
   assert(gate_binary.valid && !gate_binary.state);
-  gate_lock_state.state="locked"; c16.request("READ FUNCTION");
+  gate_lock_state.state="locked"; c16.request("READ FUNCTION"); tick(c16,250);
   assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
   const std::string complete="ACK READ FUNCTION,1:1,J:1,Z:"+std::string(300,'A');
   acknowledge(c16,complete);
@@ -381,45 +381,65 @@ int main() {
   }
   // Successful save: exactly one guarded write, followed by full readback.
   reset(); esphome::ble_client::Parent p17; EyeOpenClient c17(false); c17.p=&p17; ready(c17);
-  c17.request_auto_close(2); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
-  acknowledge(c17,base); assert(settings_write_count()==0); tick(c17,50);
+  c17.request_auto_close(2); tick(c17,250); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c17,base); assert(settings_write_count()==0); tick(c17,250);
   assert(settings_write_count()==1 && writes.back().payload=="C=WRITE FUNCTION,"+changed.substr(18));
   assert(setting_9.state!="10 sec"); // No optimistic selection.
-  acknowledge(c17,"ACK FUNCTION;src=P9999999"); tick(c17,50);
+  acknowledge(c17,"ACK FUNCTION;src=P9999999"); tick(c17,250);
   assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c17,changed);
   assert(setting_9.state=="10 sec" && settings_result.state.find("verified")!=std::string::npos);
   assert(settings_write_count()==1 && gate_binary.valid && !gate_binary.state);
   // Same-value selection does not write the board at all.
-  c17.request_auto_close(2); acknowledge(c17,changed);
+  c17.request_auto_close(2); tick(c17,250); acknowledge(c17,changed);
   assert(settings_write_count()==1 && settings_result.state.find("no write needed")!=std::string::npos);
   // Mismatched readback reports actual values and never retries a write.
   reset(); esphome::ble_client::Parent p18; EyeOpenClient c18(false); c18.p=&p18; ready(c18);
-  c18.request_auto_close(2); acknowledge(c18,base); tick(c18,50);
-  acknowledge(c18,"ACK FUNCTION"); tick(c18,50); acknowledge(c18,base);
+  c18.request_auto_close(2); tick(c18,250); acknowledge(c18,base); tick(c18,250);
+  acknowledge(c18,"ACK FUNCTION"); tick(c18,250); acknowledge(c18,base);
   assert(settings_write_count()==1 && setting_9.state=="Function OFF");
   assert(settings_result.state.find("Readback mismatch")!=std::string::npos);
   // Disconnect after submission cannot replay settings after recovery.
   reset(); esphome::ble_client::Parent p19; EyeOpenClient c19(false); c19.p=&p19; ready(c19);
-  c19.request_auto_close(2); acknowledge(c19,base); tick(c19,50);
+  c19.request_auto_close(2); tick(c19,250); acknowledge(c19,base); tick(c19,250);
   event(c19,ESP_GATTC_CLOSE_EVT); clock_ms+=100000; c19.maintenance();
   assert(settings_write_count()==1);
   // A Stop or movement event before submission cancels the pending write.
   for(bool stop:{false,true}) {
     reset(); esphome::ble_client::Parent p20; EyeOpenClient c20(false); c20.p=&p20; ready(c20);
-    c20.request_auto_close(2); acknowledge(c20,base);
+    c20.request_auto_close(2); tick(c20,250); acknowledge(c20,base);
     if(stop) c20.request("STOP"); else event(c20,ESP_GATTC_NOTIFY_EVT,42,"Opening");
-    tick(c20,50); assert(settings_write_count()==0);
+    tick(c20,250); assert(settings_write_count()==0);
     if(stop) assert(writes.back().payload=="C=STOP;src=P9999999");
   }
   // Unknown metadata is readable, but cannot be silently lost by an edit.
   reset(); esphome::ble_client::Parent p21; EyeOpenClient c21(false); c21.p=&p21; ready(c21);
-  c21.request_auto_close(2); acknowledge(c21,base+";future=keep"); tick(c21,50);
+  c21.request_auto_close(2); tick(c21,250); acknowledge(c21,base+";future=keep"); tick(c21,250);
   assert(settings_write_count()==0 && settings_result.state.find("unknown extension")!=std::string::npos);
   // Automatic post-connect refresh is read-only and follows confirmed status.
   reset(); esphome::ble_client::Parent p22; EyeOpenClient c22; c22.p=&p22; ready(c22);
-  tick(c22,0); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  tick(c22,500); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c22,base); assert(setting_1.state=="Overcurrent" && setting_9.state=="Function OFF");
   assert(settings_write_count()==0);
+  // Status/configuration turnaround is paced, rather than writing immediately
+  // into the module's previous UART transaction.
+  reset(); esphome::ble_client::Parent p23; EyeOpenClient c23(false); c23.p=&p23; ready(c23);
+  const auto before_quiet=writes.size(); c23.request_auto_close(2);
+  tick(c23,249); assert(writes.size()==before_quiet);
+  tick(c23,1); assert(writes.size()==before_quiet+1);
+  // A stale status result during a settings read must not drop healthy BLE.
+  acknowledge(c23,"ACK STATUS:PED CLOSED,0");
+  for(int i=0;i<2;++i) { tick(c23,750); event(c23,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0"); }
+  assert(p23.disconnections==0 && settings_write_count()==0 && gate_binary.valid);
+  assert(settings_result.state.find("read did not match")!=std::string::npos);
+  tick(c23,1000); assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  // Lost readback after a successful write remains explicitly uncertain,
+  // without resending the write or tearing down the GATT connection.
+  reset(); esphome::ble_client::Parent p24; EyeOpenClient c24(false); c24.p=&p24; ready(c24);
+  c24.request_auto_close(2); tick(c24,250); acknowledge(c24,base); tick(c24,250);
+  acknowledge(c24,"ACK FUNCTION"); tick(c24,250); acknowledge(c24,"ACK FUNCTION");
+  for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
+  assert(p24.disconnections==0 && settings_write_count()==1);
+  assert(settings_result.state.find("uncertain")!=std::string::npos);
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

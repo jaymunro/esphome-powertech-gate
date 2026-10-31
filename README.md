@@ -138,6 +138,12 @@ transaction can submit a configuration write. No write is scheduled on boot or
 reconnect. Board write/readback must still be physically validated on each new
 controller/firmware; host transaction tests use simulated Bluetooth.
 
+Settings transactions wait at least 250 ms after the previous matched reply;
+automatic refresh waits for confirmed Closed and a 500 ms idle gap. A settings
+read receiving unrelated UART replies is abandoned after three reads, leaving
+healthy Bluetooth connected and normal status polling running. An uncertain
+post-write readback is reported explicitly and never resends the write.
+
 The PS19001/P3.6 controller returns `ACK READ FUNCTION,` followed by labeled
 fields. The matcher also accepts the colon separator. The model schema is in
 `settings/ps19001.json`; inspect a saved ACK with
