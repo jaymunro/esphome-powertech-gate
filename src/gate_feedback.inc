@@ -17,7 +17,10 @@ class GateFeedback {
   }
   void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; }
   void event(uint32_t now) {
-    last_event_ = now; invalidate();  // Query current status; do not replay the event as movement.
+    last_event_ = now; pending_=true; candidate_.clear();
+    // Untimestamped notifications only request confirmation. Preserve a fresh
+    // confirmed state; they neither establish movement nor refresh its age.
+    if(!valid_) invalidate();
   }
   void commanded_open(bool pedestrian, uint32_t now) {
     hint_mode_ = pedestrian ? "pedestrian" : "car"; hint_at_=now; hint_pending_=true;
@@ -43,11 +46,13 @@ class GateFeedback {
     if (!closed && next_mode == "closed") next_mode.clear();
     const std::string key = std::string(closed ? "closed" : "open") + ":" + next_mode;
     if (candidate_ != key) {
-      candidate_ = key; candidate_at_ = now; valid_ = false;
-      physical_ = car_ = pedestrian_ = "unavailable"; return false;
+      candidate_ = key; candidate_at_ = now; pending_=true;
+      // Confirm a new candidate without publishing an intermediate Unknown.
+      // Freshness still expires from the last confirmed status after 25s.
+      return false;
     }
     if (uint32_t(now-candidate_at_) < (closed ? 1000u : 500u)) return false;
-    valid_ = synced_ = true; last_status_ = now; mode_ = next_mode;
+    valid_ = synced_ = true; pending_=false; last_status_ = now; mode_ = next_mode;
     last_phase_=word;
     if (!closed && !next_mode.empty()) hint_pending_=false;
     physical_ = closed ? "closed" : "open";
@@ -63,6 +68,7 @@ class GateFeedback {
     return true;
   }
   bool available() const { return valid_; }
+  bool confirmed_closed() const { return valid_ && !pending_ && physical_=="closed"; }
   const std::string &gate() const { return physical_; }
   const std::string &car() const { return car_; }
   const std::string &pedestrian() const { return pedestrian_; }
@@ -101,8 +107,8 @@ class GateFeedback {
   Profile profile_;
   std::string hint_mode_,last_phase_;
   uint32_t hint_at_{0}; bool hint_pending_{false};
-  bool linked_{false},valid_{false},synced_{false};
+  bool linked_{false},valid_{false},synced_{false},pending_{true};
   uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
   std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};
-  void invalidate() { valid_=false; candidate_.clear(); physical_=car_=pedestrian_="unavailable"; }
+  void invalidate() { valid_=false; pending_=true; candidate_.clear(); physical_=car_=pedestrian_="unavailable"; }
 };

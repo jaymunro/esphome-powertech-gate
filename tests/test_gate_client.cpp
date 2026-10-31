@@ -14,6 +14,7 @@ enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATT
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
 void test_log(const char *, const char *, ...) {}
 #define ESP_LOGW test_log
+#define ESP_LOGD test_log
 struct esp_ble_gattc_cb_param_t {
   struct { int reason=0; } close;
   struct { int handle=0, status=0; } reg_for_notify;
@@ -97,7 +98,8 @@ void discover(EyeOpenClient &c) {
 }
 void unlock_without_challenge(EyeOpenClient &c) { event(c,ESP_GATTC_READ_CHAR_EVT,46,"M=0;C=fixture"); tick(c,100); }
 void acknowledge(EyeOpenClient &c,const std::string &reply) {
-  event(c,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c,200); event(c,ESP_GATTC_READ_CHAR_EVT,106,reply);
+  const bool settings_read=!writes.empty() && writes.back().payload.rfind("C=READ FUNCTION;",0)==0;
+  event(c,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c,settings_read?600:200); event(c,ESP_GATTC_READ_CHAR_EVT,106,reply);
 }
 void ready(EyeOpenClient &c) {
   c.request("READ STATUS"); discover(c); unlock_without_challenge(c);
@@ -339,7 +341,7 @@ int main() {
   // native phase. Resetting motion to idle here falsely displayed Closed.
   const auto opening_publications=ped_cover.publications;
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpened");
-  assert(!gate_binary.valid && ped_cover.position==0);
+  assert(gate_binary.valid && gate_binary.state && ped_cover.position==0);
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(ped_cover.publications==opening_publications);
   tick(c14,0); acknowledge(c14,"ACK STATUS:PED OPENING,30");
@@ -350,7 +352,7 @@ int main() {
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
   const auto closing_publications=ped_cover.publications;
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"Closing");
-  assert(!gate_binary.valid && ped_cover.position==1);
+  assert(gate_binary.valid && gate_binary.state && ped_cover.position==1);
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
   assert(ped_cover.publications==closing_publications);
   tick(c14,0); acknowledge(c14,"ACK STATUS:PED CLOSING,10");
@@ -461,10 +463,10 @@ int main() {
   // read after 30 seconds, rather than needing a Home Assistant button.
   tick(c22,300000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");
   tick(c22,1000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");tick(c22,500);
-  for(int attempt=0;attempt<4;++attempt) {
+  for(int attempt=0;attempt<3;++attempt) {
     if(attempt) tick(c22,1600);
     acknowledge(c22,"unrelated");
-    for(int i=0;i<2;++i) {tick(c22,750);event(c22,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+    for(int i=0;i<4;++i) {tick(c22,500);event(c22,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
   }
   assert(settings_result.state.find("read did not match")!=std::string::npos);
   tick(c22,30000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");
@@ -479,7 +481,7 @@ int main() {
   tick(c23,1); assert(writes.size()==before_quiet+1);
   // A stale status result during a settings read must not drop healthy BLE.
   acknowledge(c23,"ACK STATUS:PED CLOSED,0");
-  for(int i=0;i<2;++i) { tick(c23,750); event(c23,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0"); }
+  for(int i=0;i<4;++i) { tick(c23,500); event(c23,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0"); }
   assert(p23.disconnections==0 && settings_write_count()==0 && gate_binary.valid);
   assert(settings_result.state.find("retrying read only")!=std::string::npos);
   const auto before_retry=writes.size(); tick(c23,1500);
@@ -492,12 +494,12 @@ int main() {
   reset(); esphome::ble_client::Parent p24; EyeOpenClient c24(false); c24.p=&p24; ready(c24);
   c24.request_auto_close(2); tick(c24,250); acknowledge(c24,base); tick(c24,250);
   acknowledge(c24,"ACK FUNCTION"); tick(c24,250); acknowledge(c24,"ACK FUNCTION");
-  for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
+  for(int i=0;i<4;++i) { tick(c24,500); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
   assert(p24.disconnections==0 && settings_write_count()==1);
   assert(settings_result.state.find("retrying read only")!=std::string::npos);
-  for(int retry=0;retry<3;++retry) {
+  for(int retry=0;retry<2;++retry) {
     tick(c24,1600); acknowledge(c24,"ACK FUNCTION");
-    for(int i=0;i<2;++i) { tick(c24,750); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
+    for(int i=0;i<4;++i) { tick(c24,500); event(c24,ESP_GATTC_READ_CHAR_EVT,106,"ACK FUNCTION"); }
   }
   assert(settings_result.state.find("uncertain")!=std::string::npos);
   assert(settings_write_count()==1 && p24.disconnections==0);
@@ -564,10 +566,23 @@ int main() {
   // Stop during read retry cancels unsent edits and retains priority.
   reset();esphome::ble_client::Parent p27;EyeOpenClient c27(false);c27.p=&p27;ready(c27);
   c27.request_auto_close(2);tick(c27,250);acknowledge(c27,"unrelated");
-  for(int i=0;i<2;++i) { tick(c27,750);event(c27,ESP_GATTC_READ_CHAR_EVT,106,"unrelated"); }
+  for(int i=0;i<4;++i) { tick(c27,500);event(c27,ESP_GATTC_READ_CHAR_EVT,106,"unrelated"); }
   c27.request("STOP");tick(c27,1500);
   assert(writes.back().payload=="C=STOP;src=P9999999" && settings_write_count()==0);
   acknowledge(c27,"ACK STOP");
 
+  // Slow configuration replies get a 600ms initial wait and 500ms rereads.
+  // The first recovered background retry stays in logs, not HA result churn.
+  reset();esphome::ble_client::Parent p28;EyeOpenClient c28(false);c28.p=&p28;ready(c28);
+  c28.request("READ FUNCTION");tick(c28,250);
+  auto read_count=reads.size();event(c28,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(c28,599);assert(reads.size()==read_count);tick(c28,1);assert(reads.size()==read_count+1);
+  event(c28,ESP_GATTC_READ_CHAR_EVT,106,base);
+  assert(settings_result.state=="Configuration read and validated");
+  c28.request("READ FUNCTION");tick(c28,250);acknowledge(c28,"unrelated");
+  for(int i=0;i<4;++i) {tick(c28,500);event(c28,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+  assert(settings_result.state=="Configuration read and validated");
+  tick(c28,1600);acknowledge(c28,base);
+  assert(settings_result.state=="Configuration read and validated" && settings_write_count()==0);
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

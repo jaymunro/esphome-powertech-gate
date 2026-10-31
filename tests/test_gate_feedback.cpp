@@ -15,8 +15,8 @@ int main() {
  f.event(6000); assert(!f.accept({"PED CLOSED",0},8000));
  assert(!f.accept({"PED CLOSED",0},15000)); assert(f.accept({"PED CLOSED",0},17000));
  assert(f.gate()=="closed" && f.car()=="closed" && f.pedestrian()=="closed");
- // A buffered event never reports open; it only invalidates until status confirms.
- f.event(18000); assert(!f.available() && f.gate()=="unavailable");
+ // A buffered event never reports movement or discards fresh confirmed state.
+ f.event(18000); assert(f.available() && f.gate()=="closed" && !f.confirmed_closed());
  assert(!f.accept({"PED CLOSED",0},19000)); assert(f.accept({"PED CLOSED",0},21000));
  assert(f.gate()=="closed");
  f.event(22000); assert(!f.accept({"SINGLE STOPPED",25},23000));
@@ -25,7 +25,7 @@ int main() {
  f.event(26000); assert(!f.accept({"PED CLOSING",15},27000)); assert(f.accept({"PED CLOSING",10},29000));
  assert(f.pedestrian()=="closing" && f.car()=="closed");
  assert(!f.accept({"PED CLOSED",0},31000));
- assert(f.gate()=="unavailable" && f.car()=="unavailable" && f.pedestrian()=="unavailable");
+ assert(f.gate()=="open" && f.pedestrian()=="closing");
  assert(f.accept({"PED CLOSED",0},33000));
  // Unknown opening mode cannot produce two misleading open access covers.
  f.event(34000); assert(!f.accept({"PED OPENING",20},35000)); assert(f.accept({"PED OPENING",40},37000));
@@ -71,7 +71,7 @@ int main() {
  // A bounded local command hint identifies the access mode only after movement.
  GateFeedback hinted; hinted.connected(0);
  hinted.accept({"PED CLOSED",0},16000); assert(hinted.accept({"PED CLOSED",0},18000));
- hinted.commanded_open(true,19000); assert(!hinted.available());
+ hinted.commanded_open(true,19000); assert(hinted.available() && !hinted.confirmed_closed());
  assert(!hinted.accept({"PED OPENING",10},19200));
  assert(hinted.accept({"PED OPENING",30},19800));
  assert(hinted.pedestrian()=="opening" && hinted.car()=="closed");
@@ -86,5 +86,18 @@ int main() {
  hinted.commanded_open(true,34000); hinted.disconnected(); hinted.connected(35000);
  hinted.accept({"PED OPENING",10},51000); assert(hinted.accept({"PED OPENING",30},51600));
  assert(hinted.car()=="unavailable" && hinted.pedestrian()=="unavailable");
+ // Notifications cannot extend TTL or keep stale Closed alive indefinitely.
+ GateFeedback noisy; noisy.connected(0);
+ noisy.accept({"PED CLOSED",0},16000);assert(noisy.accept({"PED CLOSED",0},18000));
+ for(uint32_t t=19000;t<44000;t+=1000) { noisy.event(t);noisy.tick(t); }
+ assert(noisy.available() && !noisy.confirmed_closed());
+ noisy.event(44001);noisy.tick(44001);assert(!noisy.available());
+ // Access-mode reclassification cannot make a known physical Open Unknown.
+ GateFeedback mode;mode.connected(0);
+ mode.accept({"PED OPENING",10},16000);mode.accept({"PED OPENING",30},17000);
+ assert(mode.available() && mode.gate()=="open");
+ assert(!mode.accept({"PED OPENED",100},18000));
+ assert(mode.available() && mode.gate()=="open");
+ assert(mode.accept({"PED OPENED",100},19000) && mode.car()=="open");
  puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and wraparound.");
 }

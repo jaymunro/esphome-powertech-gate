@@ -27,7 +27,7 @@ From version 0.8.0, ESPHome publishes two native covers, **Gate state** and a
 source sensors and command buttons stay internal to the firmware.
 
 Gate state is an opening-class binary sensor: Open/Closed with fresh feedback,
-**Unknown** if Bluetooth disconnects, feedback expires or the state is not yet
+**Unknown** if Bluetooth disconnects, feedback expires or startup state is not yet
 confirmed, and **Unavailable** when the ESP32 cannot reach Home Assistant.
 The native covers retain their entire last confirmed state, including Opening
 or Closing, when feedback is lost or awaiting confirmation. They can therefore
@@ -96,6 +96,12 @@ or within 30 seconds of a controller event/command, it waits 500 ms instead.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
+A fresh confirmed Gate state is retained while notifications or new candidate
+samples are checked, instead of flashing Unknown during each transition. These
+checks never extend the 25-second freshness timeout. Configuration writes stay
+blocked while a notification or candidate awaits confirmation, even if the last
+confirmed displayed state is Closed. Disconnect and stale-status handling are
+unchanged.
 
 An acknowledged HA opening command supplies an 8-second access-mode hint. It
 cannot report Opening/Open by itself: two subsequent status samples must confirm
@@ -141,7 +147,7 @@ covered by host tests, but have not been physically validated on Hall hardware.
 Settings refresh automatically after connection/status synchronization, after a
 save, and every five minutes while feedback confirms the gate is closed. An
 exhausted configuration-read attempt is scheduled again after 30 seconds, with
-the same Closed/idle guard. No monitoring switch or manual refresh button is
+the same confirmed-Closed/idle guard. No monitoring switch or manual refresh button is
 published to Home Assistant. **Settings update result** explains validation,
 rejected edits and uncertain outcomes. Settings retain their last validated
 values during loss of feedback; they are not a continuous settings stream. The original 18 read-only sensor entities are replaced by
@@ -155,8 +161,12 @@ EyeOpen/cloud clients can overwrite the shared UART reply. The bridge serializes
 its own operations and waits at least 250 ms between settings transactions.
 It searches multiline responses for a complete matching reply, rejects conflicting
 acknowledgements, and validates every echoed byte of a full write acknowledgement.
-If a configuration reply is overwritten, it resends **READ FUNCTION only** with
-staggered backoff: at most four sends, each with three reply reads. It retains a
+Settings reads wait 600 ms for their first reply and allow five reply reads,
+500 ms apart, before resending. If a configuration reply is overwritten, it
+resends **READ FUNCTION only** with staggered backoff: at most three sends.
+The first recovered background retry is logged internally; prolonged recovery
+and exhausted attempts remain visible in Settings update result. Write/readback
+uncertainty is always reported explicitly. It retains a
 healthy Bluetooth connection throughout these text mismatches. Initial and
 reconnect status reads also retain a healthy link and back off on unrelated
 replies; a queued movement command still cannot bypass baseline validation. Invalid or

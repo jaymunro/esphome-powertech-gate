@@ -7,7 +7,7 @@ movement buttons are internal and are not advertised to Home Assistant.
 - **Car gate** and **Pedestrian gate** are mutually exclusive access modes,
   not leaf-position sensors. Pedestrian open means car closed, and vice versa.
 - **Gate state** uses the Opening binary-sensor class: `on` = Open, `off` =
-  Closed. Missing/unconfirmed/stale Bluetooth feedback gives **Unknown**;
+  Closed. Missing, startup-unconfirmed or stale Bluetooth feedback gives **Unknown**;
   losing the ESP32 connection gives **Unavailable**. No reed switch is used.
 - **Bluetooth connection** uses the Connectivity class and shows the actual
   GATT link, Connected/Disconnected. Connected does not imply authenticated,
