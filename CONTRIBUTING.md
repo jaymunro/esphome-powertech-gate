@@ -16,6 +16,10 @@ protocol. Similar gate hardware or a shared app name is not proof of compatibili
    car opening/open/auto-close, explicit close, Stop, reconnect buffered messages,
    malformed replies and missing feedback. Include cases where the opening mode
    cannot be known; never infer it from a generic PED label or a command ACK.
+   Set `opening_event_mode_hint` to false unless exact C004 Opening/PedOpening
+   labels have been corroborated against wired and transmitter movements on the
+   documented firmware. This enables a guarded hint, never notification-only
+   physical state. Test reconnect replay and contradictory event/status evidence.
 6. Run generation, host tests and an ESPHome example compile. Open a PR with
    the model/firmware, a concise test matrix and remaining limitations.
 

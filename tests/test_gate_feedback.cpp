@@ -155,5 +155,66 @@ int main() {
  assert(!mode.accept({"PED OPENED",100},18000));
  assert(mode.available() && mode.gate()=="open");
  assert(mode.accept({"PED OPENED",100},19000) && mode.car()=="open");
- puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and wraparound.");
+ // C004 labels, unlike sticky UART prefixes, can hint an external opening.
+ for(bool ped : {false,true}) {
+  GateFeedback events({"PS19001","SINGLE STOPPED",95,0,true,5,true});events.connected(0);
+  events.accept({"PED CLOSED",1},16000);events.accept({"PED CLOSED",1},18000);
+  events.event(19000,ped ? "PedOpening;src=fixture" : "Opening;src=fixture");
+  assert(events.gate()=="closed" && !events.confirmed_closed());
+  assert(!events.accept({"PED OPENING",14},19500));
+  assert(!events.accept({"PED OPENING",14},20100)); // A stale repeated position is insufficient.
+  assert(events.accept({"PED OPENING",24},20200));
+  assert((ped ? events.pedestrian() : events.car())=="opening");
+  assert((ped ? events.car() : events.pedestrian())=="closed");
+  events.event(20300,ped ? "Opening" : "PedOpening"); // A late opposite event cannot relabel the cycle.
+  events.accept({"PED OPENING",40},20900);events.accept({"PED OPENING",50},21500);
+  assert((ped ? events.pedestrian() : events.car())=="opening");
+ }
+ auto closed_events=[](){GateFeedback g({"PS19001","SINGLE STOPPED",95,0,true,5,true});
+   g.connected(0);g.accept({"PED CLOSED",1},16000);g.accept({"PED CLOSED",1},18000);return g;};
+ // Replayed idle event is consumed by CLOSED and cannot label a later opening.
+ auto idle_event=closed_events();idle_event.event(19000,"PedOpening");
+ idle_event.accept({"PED CLOSED",1},19500);idle_event.accept({"PED CLOSED",1},20700);
+ idle_event.accept({"PED OPENING",14},22000);idle_event.accept({"PED OPENING",24},22600);
+ assert(idle_event.car()=="unavailable" && idle_event.pedestrian()=="unavailable");
+ // Conflicting, expired, malformed and reversed-motion hints fail unresolved.
+ for(int scenario=0;scenario<4;++scenario) {
+  auto g=closed_events();g.event(19000,scenario==2 ? "NotPedOpening" : "PedOpening");
+  if(scenario==0)g.event(19100,"Opening");
+  const uint32_t at=scenario==1 ? 28000 : 19500;
+  g.accept({"PED OPENING",20},at);g.accept({"PED OPENING",scenario==3 ? 10 : 30},at+600);
+  g.accept({"PED OPENING",40},at+1200);g.accept({"PED OPENING",50},at+1800);
+  assert(g.car()=="unavailable" && g.pedestrian()=="unavailable");
+ }
+ auto reconnect=closed_events();reconnect.disconnected();reconnect.connected(19000);
+ reconnect.event(20000,"PedOpening");reconnect.accept({"PED OPENING",14},35000);
+ reconnect.accept({"PED OPENING",24},35600);assert(reconnect.pedestrian()=="unavailable");
+ // A compatible event preserves pending fresh confirmation, not an old stable candidate.
+ auto endpoint=closed_events();endpoint.accept({"PED OPENED",100},20000);
+ endpoint.event(20400,"Opened;src=fixture");assert(endpoint.accept({"PED OPENED",100},20600));
+ assert(endpoint.car()=="open");
+ endpoint.accept({"PED CLOSED",1},21000);endpoint.event(21400,"PedClosed");
+ assert(!endpoint.accept({"PED CLOSED",1},21600));assert(endpoint.accept({"PED CLOSED",1},22000));
+ endpoint.event(23000,"PedClosed");assert(!endpoint.confirmed_closed());
+ assert(!endpoint.accept({"PED CLOSED",1},23100));assert(endpoint.accept({"PED CLOSED",1},24200));
+ // Sanitized replay of the 11:26 wired car capture. Sticky PED prefix must
+ // classify car from corroborated Opening, then keep explicit CLOSED timing.
+ GateFeedback recorded({"PS19001","SINGLE STOPPED",95,0,true,5,true});recorded.connected(0);
+ recorded.accept({"PED CLOSED",1},16000);recorded.accept({"PED CLOSED",1},20628);
+ recorded.event(23392,"Opening;src=fixture");
+ recorded.accept({"PED OPENING",40},25736);
+ assert(recorded.accept({"PED OPENING",52},26556));assert(recorded.car()=="opening");
+ assert(recorded.accept({"PED OPENED",100},31889));assert(recorded.car()=="open");
+ recorded.event(32402,"Opened");recorded.accept({"PED OPENED",100},32714);
+ recorded.accept({"PED OPENED",100},33431);
+ recorded.event(41403,"Closing");recorded.accept({"PED CLOSING",95},41638);
+ recorded.accept({"PED CLOSING",87},42334);assert(recorded.car()=="closing");
+ recorded.accept({"PED CLOSING",0},49840);assert(recorded.gate()=="open");
+ recorded.event(50116,"PedClosed");recorded.accept({"PED CLOSED",1},50559);
+ assert(!recorded.accept({"PED CLOSED",1},51348));
+ assert(recorded.accept({"PED CLOSED",1},52168));assert(recorded.confirmed_closed());
+ // The next external pedestrian cycle is independent of the previous car mode.
+ recorded.event(53000,"PedOpening");recorded.accept({"FULL OPENING",4},53500);
+ recorded.accept({"FULL OPENING",10},54100);assert(recorded.pedestrian()=="opening" && recorded.car()=="closed");
+ puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and guarded C004 hints.");
 }

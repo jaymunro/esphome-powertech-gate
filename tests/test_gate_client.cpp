@@ -35,7 +35,7 @@ struct Number { float state=0; void publish_state(float s) { state=s; } };
 Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
-int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true;
+int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true,profile_opening_event_mode_hint=true;
 Text control_result,poll_health,settings_snapshot,settings_result;
 Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;
@@ -635,5 +635,31 @@ int main() {
   c33.request("FULL OPEN");event(c33,ESP_GATTC_WRITE_CHAR_EVT,106);
   for(int i=0;i<12;++i){tick(c33,0);event(c33,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
   assert(p33.disconnections==0 && control_result.state.find("Acknowledgement missing")!=std::string::npos);
-  puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
+  // A C004 event during a stale-reply wait immediately refreshes READ STATUS,
+  // once per transaction. It never issues another motion or overlapping read.
+  reset();esphome::ble_client::Parent p34;EyeOpenClient c34(false);c34.p=&p34;ready(c34);
+  tick(c34,1000);acknowledge(c34,"ERROR:READ LIGHT STATUS");
+  const auto stale_writes=writes.size(),stale_reads=reads.size();
+  event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==stale_writes+1 && reads.size()==stale_reads);
+  assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");assert(writes.size()==stale_writes+1);
+  acknowledge(c34,"unrelated");event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==stale_writes+1); // Duplicate events cannot reset the budget.
+  for(int i=0;i<2;++i){tick(c34,750);event(c34,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+  assert(p34.disconnections==0 && poll_health.state.find("mismatch 1")!=std::string::npos);
+  for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
+  // If a read is in flight, refresh only after its mismatching result arrives.
+  reset();esphome::ble_client::Parent p35;EyeOpenClient c35(false);c35.p=&p35;ready(c35);
+  tick(c35,1000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);
+  const auto inflight_writes=writes.size(),inflight_reads=reads.size();
+  event(c35,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(c35,0);
+  assert(writes.size()==inflight_writes && reads.size()==inflight_reads);
+  event(c35,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==inflight_writes+1 && reads.size()==inflight_reads);
+  acknowledge(c35,"ACK STATUS:PED OPENING,14");
+  tick(c35,500);acknowledge(c35,"ACK STATUS:PED OPENING,24");
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
+  assert(p35.disconnections==0);
+  puts("Protocol, native cover, event recovery and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

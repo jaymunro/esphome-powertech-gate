@@ -6,18 +6,40 @@ class GateFeedback {
     int full_open_min{95}, closed_position{0};
     bool supports_pedestrian{true};
     int closed_position_tolerance{0};
+    bool opening_event_mode_hint{false};
   };
   GateFeedback() = default;
   explicit GateFeedback(Profile profile) : profile_(profile) {}
   void set_profile(Profile profile) { profile_ = profile; disconnected(); }
   struct Sample { std::string text; int position{-1}; };
   void connected(uint32_t now) {
+    clear_event_hint(); baseline_armed_=false; last_phase_.clear(); sample_phase_.clear();
     linked_ = true; connected_at_ = last_event_ = now; synced_ = false;
     invalidate(); mode_.clear(); position_=-1;
   }
-  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; }
-  void event(uint32_t now) {
-    last_event_ = now; pending_=true; candidate_.clear();
+  void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; baseline_armed_=false; clear_event_hint(); }
+  void event(uint32_t now, const std::string &payload="") {
+    const auto label=payload.substr(0,payload.find(';'));
+    const std::string event_mode=label=="Opening" ? "car" :
+        (label=="PedOpening" && profile_.supports_pedestrian ? "pedestrian" : "");
+    if(profile_.opening_event_mode_hint && !event_mode.empty()) {
+      if((!event_mode_.empty() && event_mode_!=event_mode) ||
+         (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
+        event_conflict_=true; event_mode_.clear(); hint_pending_=false;
+      } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
+                baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=5000 &&
+                (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
+        event_mode_=event_mode; event_at_=now;
+      }
+    }
+    // Preserve only a pending candidate that the event agrees with. An event
+    // cannot establish state, renew its age, or release the closed-write guard.
+    const bool compatible=pending_ &&
+        ((label=="Opened" && candidate_=="open:car" && (sample_phase_=="OPENED" || sample_phase_=="OPEN")) ||
+         (label=="PedOpened" && candidate_=="open:pedestrian" && sample_phase_=="STOPPED") ||
+         ((label=="Closed" || label=="PedClosed") && candidate_=="closed:closed" && sample_phase_=="CLOSED") ||
+         (label=="Closing" && (sample_phase_=="CLOSING" || sample_phase_=="CLOSEING")));
+    last_event_ = now; pending_=true; if(!compatible) candidate_.clear();
     // Untimestamped notifications only request confirmation. Preserve a fresh
     // confirmed state; they neither establish movement nor refresh its age.
     if(!valid_) invalidate();
@@ -37,13 +59,19 @@ class GateFeedback {
     if (uint32_t(now-connected_at_) < 15000 ||
         (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
     const auto word = s.text.substr(s.text.find_last_of(' ')+1);
+    sample_phase_=word;
     const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
     // A contradictory CLOSED position must never become fresh Open feedback.
     if (word == "CLOSED" && !closed) { invalidate(); return false; }
     std::string next_mode = closed ? "closed" : mode_;
+    bool event_hint=false;
+    if(closed) clear_event_hint();  // Replayed idle events cannot survive a fresh CLOSED read.
     if (word == "OPENING") {
       if (last_phase_ != "OPENING") next_mode.clear();
       if (hint_pending_ && uint32_t(now-hint_at_) < 8000) next_mode=hint_mode_;
+      else if(!event_conflict_ && !event_mode_.empty() && uint32_t(now-event_at_)<8000) {
+        next_mode=event_mode_; event_hint=true;
+      }
     }
     if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
     else if (!closed && (word == "OPENED" || word == "OPEN") && s.position >= profile_.full_open_min) next_mode = "car";
@@ -51,9 +79,15 @@ class GateFeedback {
     if (!closed && next_mode == "closed") next_mode.clear();
     const std::string key = std::string(closed ? "closed" : "open") + ":" + next_mode;
     if (candidate_ != key) {
-      candidate_ = key; candidate_at_ = now; pending_=true;
+      candidate_ = key; candidate_at_ = now; candidate_position_=s.position; pending_=true;
       // Confirm a new candidate without publishing an intermediate Unknown.
       // Freshness still expires from the last confirmed status after 25s.
+      return false;
+    }
+    // Unlike an explicit local command, an event is untimestamped. Demand
+    // progressing physical OPENING reads before accepting its access-mode hint.
+    if(event_hint && s.position<=candidate_position_) {
+      if(s.position<candidate_position_) { event_mode_.clear(); event_conflict_=true; candidate_.clear(); }
       return false;
     }
     if (uint32_t(now-candidate_at_) < (closed ? 1000u : 500u)) return false;
@@ -61,6 +95,8 @@ class GateFeedback {
     last_phase_=word;
     if (!closed && !next_mode.empty()) hint_pending_=false;
     physical_ = closed ? "closed" : "open";
+    baseline_armed_=closed;
+    if(!closed && !next_mode.empty()) event_mode_.clear();
     car_ = pedestrian_ = "unavailable";
     if (closed) car_ = pedestrian_ = "closed";
     else if (mode_ == "car" || mode_ == "pedestrian") {
@@ -120,6 +156,10 @@ class GateFeedback {
   int position_{-1}; uint32_t last_sample_{0};
   std::string hint_mode_,last_phase_;
   uint32_t hint_at_{0}; bool hint_pending_{false};
+  std::string event_mode_,sample_phase_;
+  uint32_t event_at_{0}; int candidate_position_{-1};
+  bool baseline_armed_{false},event_conflict_{false};
+  void clear_event_hint() { event_mode_.clear(); event_conflict_=false; }
   bool linked_{false},valid_{false},synced_{false},pending_{true};
   uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
   std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};

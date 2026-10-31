@@ -100,6 +100,11 @@ or within 30 seconds of a controller event/command, it waits 150 ms instead.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
+If a notification arrives while a status transaction is waiting on unrelated
+reply content, the bridge submits one fresh READ STATUS after the outstanding
+GATT operation completes. This bounded refresh never repeats a movement command.
+Compatible endpoint notifications preserve a pending fresh confirmation rather
+than restarting its timer; stable Closed still requires fresh revalidation.
 A fresh confirmed Gate state is retained while notifications or new candidate
 samples are checked, instead of flashing Unknown during each transition. These
 checks never extend the 25-second freshness timeout. Configuration writes stay
@@ -110,9 +115,16 @@ unchanged.
 A successfully submitted HA opening command supplies an 8-second access-mode hint. It
 cannot report Opening/Open by itself: two subsequent status samples must confirm
 actual movement. The hint is discarded on disconnection or expiry, and explicit
-endpoint status overrides it. Without a recent local command, ambiguous generic
-transmitter opening feedback can still leave the access mode unknown until the
-controller reports a distinguishing state. Closed confirmation still requires
+endpoint status overrides it. The PS19001 profile also opts into an event-mode
+hint: exact C004 `Opening` means car and `PedOpening` means pedestrian. It is
+accepted only in an already synchronized session with a recently confirmed Closed
+baseline, then corroborated by two progressing OPENING status reads. Replayed
+events followed by Closed, conflicting hints, reversed readings and expired hints
+cannot classify an opening. The PED/FULL prefix in status replies is never used
+to classify access mode. Untimestamped events still have residual ambiguity if an
+old event coincides with a different real movement, so validate your installation
+before using these modes for announcements. Without a usable hint, the access
+mode remains unresolved until a distinguishing endpoint. Closed confirmation still requires
 samples at least 1 second apart; non-closed confirmation uses 500 ms.
 
 One user command can wait behind a background status read, without overlapping

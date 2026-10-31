@@ -7,7 +7,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
       id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-      id(profile_closed_tolerance)});
+      id(profile_closed_tolerance), id(profile_opening_event_mode_hint)});
   }
 
   void maintenance() {
@@ -187,7 +187,16 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     if (!id(control_session)) return;
     if (event == ESP_GATTC_NOTIFY_EVT && event_handle_ && param->notify.handle == event_handle_) {
-      feedback_.event(millis()); kick_poll(millis()); publish_feedback();
+      const std::string value(reinterpret_cast<const char *>(param->notify.value),
+                              std::min(size_t(param->notify.value_len),size_t(128)));
+      feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+      // Refresh the UART request rather than rereading an overwritten buffer.
+      // Never overlap an outstanding GATT write/read or resend a motion command.
+      if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 &&
+         (phase_==REPLY_WAIT || phase_==REPLY_READ)) {
+        status_event_refresh_pending_=true;
+        if(phase_==REPLY_WAIT) refresh_status_after_event();
+      }
       return;  // Native C004 receiver retains the diagnostic bytes separately.
     }
     if (event == ESP_GATTC_REG_FOR_NOTIFY_EVT && param->reg_for_notify.handle == result_handle_) {
@@ -286,6 +295,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
           // user wait through background-only rereads; never bypass reconnect
           // baseline validation or interrupt an outstanding GATT operation.
           wire_command_.clear(); next_command();
+        } else if(wire_command_=="READ STATUS" && status_event_refresh_pending_ && status_event_refreshes_<1) {
+          refresh_status_after_event();
         } else if (movement_command(wire_command_) && write_confirmed_) {
           // Read again as soon as this completed read allows. No fixed pause,
           // no concurrent GATT reads, and no movement retransmission.
@@ -487,6 +498,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
+  unsigned status_event_refreshes_{0}; bool status_event_refresh_pending_{false};
+  void refresh_status_after_event() {
+    status_event_refresh_pending_=false; ++status_event_refreshes_;
+    ESP_LOGD("gate_protocol", "Notification requested a fresh status transaction; read only");
+    write_command(true);
+  }
   uint32_t poll_interval_{1000}, fast_until_{0};
   bool fast_window_{false}, status_due_{false};
   void kick_poll(uint32_t now) { fast_window_=true; fast_until_=now+30000; status_due_=true; }
@@ -604,7 +621,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     write_command();
   }
-  void write_command() {
+  void write_command(bool event_refresh=false) {
+    if(!event_refresh) { status_event_refreshes_=0; status_event_refresh_pending_=false; }
     if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
       phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;
     }

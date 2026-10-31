@@ -3,11 +3,12 @@
 import argparse,json,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-FIELDS={'id','family','protocol','supports_pedestrian','pedestrian_stopped_status','full_open_min_position','closed_position','closed_position_tolerance','tested_firmware','validation'}
+FIELDS={'id','family','protocol','supports_pedestrian','pedestrian_stopped_status','full_open_min_position','closed_position','closed_position_tolerance','tested_firmware','validation','opening_event_mode_hint'}
 def validate(p):
     if set(p)!=FIELDS: raise ValueError('Model fields must exactly match the documented schema')
     if not re.fullmatch(r'[A-Z0-9_-]{2,32}',p['id']): raise ValueError('Invalid model id')
     if p['family']!='WBT01' or p['protocol']!='legacy_uart_v1': raise ValueError('Unsupported transport/protocol; a new driver is required')
+    if type(p['opening_event_mode_hint']) is not bool: raise ValueError('opening_event_mode_hint must be boolean')
     if type(p['supports_pedestrian']) is not bool: raise ValueError('supports_pedestrian must be boolean')
     if not re.fullmatch(r'(PED|SINGLE|FULL) STOPPED',p['pedestrian_stopped_status']): raise ValueError('Unsupported pedestrian status signature')
     lo,hi=p['closed_position'],p['full_open_min_position']
@@ -25,6 +26,7 @@ def render_profile(p):
       f'  profile_full_open_min: "{p["full_open_min_position"]}"\n'
       f'  profile_closed_position: "{p["closed_position"]}"\n'
       f'  profile_closed_tolerance: "{p["closed_position_tolerance"]}"\n'
+      f'  profile_opening_event_mode_hint: "{str(p["opening_event_mode_hint"]).lower()}"\n'
       f'  profile_supports_pedestrian: "{str(p["supports_pedestrian"]).lower()}"\n')
 
 def outputs():
