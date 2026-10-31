@@ -96,7 +96,7 @@ when diagnosing contention.
 ## Polling and movement feedback
 
 Closed idle polling waits 1 second after each reply. While open, unsynchronized,
-or within 30 seconds of a controller event/command, it waits 500 ms instead.
+or within 30 seconds of a controller event/command, it waits 150 ms instead.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
@@ -240,3 +240,16 @@ require separate validated workflows and are not exposed through arbitrary UART
 entry. Motor and safety settings should match the installed hardware.
 
 Licensed under MIT. This project is not affiliated with Powertech or EyeOpen.
+
+On PS19001 P3.6, validated FULL OPENING and PED OPENING status signatures
+classify external openings before the fully-open endpoint. Other model profiles
+leave unverified signatures empty. Notifications alone still cannot establish
+movement. Concatenated status replies are usable only when identical or when
+one exact movement phase/prefix advances monotonically; the bundle counts as
+one sample, never two confirmations. Mixed phases/modes, reversed progression
+and contradictory endpoints remain rejected.
+
+A queued user command can proceed as soon as an in-flight background status
+read completes, including an unrelated reply; background rereads no longer
+hold it up. Startup/reconnect baseline validation, lock checks, serialized GATT
+operations and no movement replay remain unchanged.

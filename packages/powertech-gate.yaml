@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.5"
+    version: "0.9.0-alpha.6"
   on_boot:
     priority: -100
     then:
@@ -31,6 +31,7 @@ esphome:
               int full_open_min{95}, closed_position{0};
               bool supports_pedestrian{true};
               int closed_position_tolerance{0};
+              std::string car_opening_status{}, pedestrian_opening_status{};
             };
             GateFeedback() = default;
             explicit GateFeedback(Profile profile) : profile_(profile) {}
@@ -70,6 +71,9 @@ esphome:
                 if (last_phase_ != "OPENING") next_mode.clear();
                 if (hint_pending_ && uint32_t(now-hint_at_) < 8000) next_mode=hint_mode_;
               }
+              // Only model-validated explicit opening signatures override a local hint.
+              if (word == "OPENING" && !profile_.car_opening_status.empty() && s.text == profile_.car_opening_status) next_mode="car";
+              else if (word == "OPENING" && profile_.supports_pedestrian && !profile_.pedestrian_opening_status.empty() && s.text == profile_.pedestrian_opening_status) next_mode="pedestrian";
               if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
               else if (!closed && (word == "OPENED" || word == "OPEN") && s.position >= profile_.full_open_min) next_mode = "car";
               // A previous closed mode says nothing about the next opening.
@@ -126,7 +130,13 @@ esphome:
                   if (!(prefix.empty() || prefix=="PED" || prefix=="SINGLE" || prefix=="FULL") ||
                       !(word=="OPEN" || word=="OPENED" || word=="OPENING" || word=="CLOSED" ||
                         word=="CLOSING" || word=="CLOSEING" || word=="STOPPED")) return false;
-                  if (found && (out.text!=text || out.position!=pos)) return false;
+                  if (found && (out.text!=text || out.position!=pos)) {
+                    // The module can concatenate successive replies. Accept only the same
+                    // movement phase/prefix with positions progressing in its direction.
+                    const bool opening=word=="OPENING" && pos>=out.position;
+                    const bool closing=(word=="CLOSING" || word=="CLOSEING") && pos<=out.position;
+                    if (out.text!=text || !(opening || closing)) return false;
+                  }
                   out={text,pos}; found=true;
                 }
                 if(end==std::string::npos) break;
@@ -298,7 +308,7 @@ esphome:
               this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
               feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
                 id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-                id(profile_closed_tolerance)});
+                id(profile_closed_tolerance), id(profile_car_opening_status), id(profile_pedestrian_opening_status)});
             }
           
             void maintenance() {
@@ -559,10 +569,18 @@ esphome:
                     }
                     wire_command_.clear();
                     status("Acknowledged: " + finished);
-                    if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
+                    if (finished=="READ STATUS" && !user_command_.empty() && !baseline_needed_) {
+                      next_command();  // The read completed; no extra queue delay is needed.
+                    } else if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
                     else { busy_ = false; phase_ = IDLE_CONNECTED; }
                   } else if (urgent_stop_ && wire_command_ != "STOP") {
                     wire_command_.clear(); phase_ = COMMAND_WAIT; deadline_ = millis() + 50;
+                  } else if (background_poll_ && wire_command_=="READ STATUS" && !user_command_.empty() &&
+                             authenticated_ && feedback_.available() && !baseline_needed_) {
+                    // A read has completed with an unrelated reply. Do not make a queued
+                    // user wait through background-only rereads; never bypass reconnect
+                    // baseline validation or interrupt an outstanding GATT operation.
+                    wire_command_.clear(); next_command();
                   } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : (wire_command_=="READ STATUS" ? 3u : 10u))) {
                     if (wire_command_ == "READ STATUS") {
                       id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
@@ -761,7 +779,7 @@ esphome:
             uint32_t poll_delay(uint32_t now) {
               if (poll_failures_) return poll_interval_;
               if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-              return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 1000;
+              return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 150 : 1000;
             }
             std::string status_text_;
             std::string user_command_, wire_command_, challenge_;
@@ -945,6 +963,14 @@ globals:
     type: std::string
     restore_value: false
     initial_value: '"${profile_pedestrian_status}"'
+  - id: profile_car_opening_status
+    type: std::string
+    restore_value: false
+    initial_value: '"${profile_car_opening_status}"'
+  - id: profile_pedestrian_opening_status
+    type: std::string
+    restore_value: false
+    initial_value: '"${profile_pedestrian_opening_status}"'
   - id: profile_full_open_min
     type: int
     restore_value: false

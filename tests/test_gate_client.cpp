@@ -35,6 +35,7 @@ struct Number { float state=0; void publish_state(float s) { state=s; } };
 Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
+std::string profile_car_opening_status="",profile_pedestrian_opening_status="";
 int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true;
 Text control_result,poll_health,settings_snapshot,settings_result;
 Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
@@ -332,7 +333,7 @@ int main() {
   acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);
   assert(writes.size()==idle_writes+2 && writes.back().payload=="C=READ STATUS;src=P9999999");
   acknowledge(c14,"ACK STATUS:PED CLOSED,0");
-  const auto fast_writes=writes.size(); tick(c14,499); assert(writes.size()==fast_writes);
+  const auto fast_writes=writes.size(); tick(c14,149); assert(writes.size()==fast_writes);
   tick(c14,1); assert(writes.size()==fast_writes+1);
   // A single user command can wait behind that poll, rather than being lost.
   c14.request("PED OPEN"); c14.request("FULL OPEN"); assert(writes.size()==fast_writes+1);
@@ -592,5 +593,24 @@ int main() {
   assert(settings_result.state=="Configuration read and validated");
   tick(c28,1600);acknowledge(c28,base);
   assert(settings_result.state=="Configuration read and validated" && settings_write_count()==0);
+  // Once a background read completes, a queued movement need not wait on
+  // unrelated-reply rereads. Never interrupt an outstanding GATT operation.
+  reset();esphome::ble_client::Parent p29;EyeOpenClient c29(false);c29.p=&p29;ready(c29);
+  tick(c29,1000);const auto queued_count=writes.size();c29.request("FULL OPEN");
+  assert(writes.size()==queued_count);
+  acknowledge(c29,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==queued_count+1 && writes.back().payload=="C=FULL OPEN;src=P9999999");
+  acknowledge(c29,"ACK FULL OPEN");tick(c29,0);acknowledge(c29,"ACK STATUS:FULL OPENING,10");
+  assert(std::count_if(writes.begin(),writes.end(),[](const Write&w){return w.payload=="C=FULL OPEN;src=P9999999";})==1);
+  // The same mismatch cannot bypass a new connection's baseline validation.
+  reset();esphome::ble_client::Parent p30;EyeOpenClient c30(false);c30.p=&p30;
+  c30.request("PED OPEN");discover(c30);unlock_without_challenge(c30);
+  acknowledge(c30,"ERROR:READ STATUS");
+  for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
+  // A lock change is still honoured on the faster unrelated-read handoff.
+  reset();esphome::ble_client::Parent p31;EyeOpenClient c31(false);c31.p=&p31;ready(c31);
+  tick(c31,1000);c31.request("PED OPEN");gate_lock_state.state="locked";
+  acknowledge(c31,"ERROR:READ LIGHT STATUS");
+  for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
   puts("Protocol, native cover and guarded settings transaction checks passed (mock Bluetooth/hash). ");
 }

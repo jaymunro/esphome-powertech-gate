@@ -7,7 +7,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
       id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-      id(profile_closed_tolerance)});
+      id(profile_closed_tolerance), id(profile_car_opening_status), id(profile_pedestrian_opening_status)});
   }
 
   void maintenance() {
@@ -268,10 +268,18 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
           }
           wire_command_.clear();
           status("Acknowledged: " + finished);
-          if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
+          if (finished=="READ STATUS" && !user_command_.empty() && !baseline_needed_) {
+            next_command();  // The read completed; no extra queue delay is needed.
+          } else if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
           else { busy_ = false; phase_ = IDLE_CONNECTED; }
         } else if (urgent_stop_ && wire_command_ != "STOP") {
           wire_command_.clear(); phase_ = COMMAND_WAIT; deadline_ = millis() + 50;
+        } else if (background_poll_ && wire_command_=="READ STATUS" && !user_command_.empty() &&
+                   authenticated_ && feedback_.available() && !baseline_needed_) {
+          // A read has completed with an unrelated reply. Do not make a queued
+          // user wait through background-only rereads; never bypass reconnect
+          // baseline validation or interrupt an outstanding GATT operation.
+          wire_command_.clear(); next_command();
         } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : (wire_command_=="READ STATUS" ? 3u : 10u))) {
           if (wire_command_ == "READ STATUS") {
             id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
@@ -470,7 +478,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint32_t poll_delay(uint32_t now) {
     if (poll_failures_) return poll_interval_;
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 1000;
+    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 150 : 1000;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;

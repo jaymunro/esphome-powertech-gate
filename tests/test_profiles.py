@@ -24,6 +24,13 @@ class Profiles(unittest.TestCase):
  def test_rejects_boolean_closed_tolerance(self):
   self.p['closed_position_tolerance']=True
   with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_ambiguous_opening_signatures(self):
+  self.p['car_opening_status']=self.p['pedestrian_opening_status']
+  with self.assertRaises(ValueError): module.validate(self.p)
+ def test_allows_unvalidated_empty_opening_signatures(self):
+  self.p['car_opening_status']=''
+  self.p['pedestrian_opening_status']=''
+  module.validate(self.p)
  def test_position_diagnostic(self):
   source=(ROOT/'templates/powertech-gate.yaml.in').read_text()
   sensor=source.split('name: Gate position',1)[1].split('  - platform:',1)[0]

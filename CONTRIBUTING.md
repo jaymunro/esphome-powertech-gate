@@ -30,3 +30,7 @@ original-value capture, acknowledgement and readback in its own change.
 
 Generated files under `packages/` must match `tools/generate.py --check`.
 New profiles must not silently change an existing model's behavior.
+
+Opening signatures `car_opening_status` and `pedestrian_opening_status` must be
+verified from fresh READ STATUS replies for both access modes. Use an empty
+string for unvalidated signatures; never infer them from a different model.
