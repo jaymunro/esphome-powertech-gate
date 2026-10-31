@@ -123,6 +123,15 @@ learning, reset or alternate-protocol commands are allowlisted. This experimenta
 branch does not yet expose editable settings, and the request is never scheduled
 as part of automatic polling or reconnect recovery.
 
+The PS19001/P3.6 controller returns `ACK READ FUNCTION,` followed by labeled
+fields. The capture matcher also accepts the colon separator. The offline
+inspection schema is in `settings/ps19001.json`; decode a saved ACK line with
+`python tools/read_settings.py /path/to/snapshot.txt`. It checks all 19 required
+fields, numeric formats and option ranges, preserves unknown fields and suffixes,
+and refuses Hall Sensor mode until its different current schema is defined.
+The supplied schema was compared with a live PS19001/P3.6 read; other firmware
+still needs validation. The decoder does not implement a configuration write.
+
 A definition is a small JSON file under `models/`, with its supported transport,
 status signatures, position semantics, pedestrian capability and validation
 record. `tools/generate.py` validates definitions and generates model packages.

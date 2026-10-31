@@ -103,6 +103,9 @@ int main() {
   assert(!EyeOpenClient::allowed("RP,1"));
   assert(!EyeOpenClient::allowed("WP,1:1"));
   std::string snapshot;
+  assert(EyeOpenClient::function_reply("C=ACK READ FUNCTION,1:1,J:1;src=fixture",snapshot));
+  assert(snapshot=="ACK READ FUNCTION,1:1,J:1;src=fixture");
+  assert(!EyeOpenClient::function_reply("ACK READ FUNCTION,",snapshot));
   assert(EyeOpenClient::function_reply("ERROR:READ LIGHT STATUS\r\nC=ACK READ FUNCTION:1:1,J:1,Z:AB;extra=keep",snapshot));
   assert(snapshot=="ACK READ FUNCTION:1:1,J:1,Z:AB;extra=keep");
   assert(!EyeOpenClient::function_reply("ACK READ FUNCTION:",snapshot));
@@ -346,7 +349,7 @@ int main() {
   assert(gate_binary.valid && !gate_binary.state);
   gate_lock_state.state="locked"; c16.request("READ FUNCTION");
   assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
-  const std::string complete="ACK READ FUNCTION:1:1,J:1,Z:"+std::string(300,'A');
+  const std::string complete="ACK READ FUNCTION,1:1,J:1,Z:"+std::string(300,'A');
   acknowledge(c16,complete);
   assert(settings_snapshot.state==complete && gate_binary.valid && !gate_binary.state);
   const auto after_settings=writes.size(); tick(c16,1000);

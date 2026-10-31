@@ -258,7 +258,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       const auto end = reply.find_first_of("\r\n", start);
       auto line = reply.substr(start, end == std::string::npos ? end : end-start);
       if (line.rfind("C=",0)==0) line.erase(0,2);
-      if (line.rfind("ACK READ FUNCTION:",0)==0) {
+      if (line.rfind("ACK READ FUNCTION",0)==0 && line.size()>17 &&
+          (line[17]==',' || line[17]==':')) {
         if (line.size() <= 18 || !std::all_of(line.begin(),line.end(),
             [](unsigned char c){return c>=32 && c<=126;})) { out.clear(); return false; }
         if (!out.empty() && out != line) { out.clear(); return false; }
