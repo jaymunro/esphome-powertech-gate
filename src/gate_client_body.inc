@@ -86,7 +86,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
 
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t /*iface*/,
                            esp_ble_gattc_cb_param_t *param) override {
+    if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
     if (event == ESP_GATTC_CLOSE_EVT) {
+      id(bluetooth_connection).publish_state(false);
       const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
       feedback_.disconnected(); publish_feedback();
       next_reconnect_ = millis() + reconnect_delay_;
@@ -267,7 +269,25 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   bool auth_blocked_{false};
   uint16_t event_handle_{0};
   uint32_t next_reconnect_{0}, reconnect_delay_{15000};
+  static void publish_cover(esphome::cover::Cover *cover, const std::string &state) {
+    // Keep the last confirmed position when the access mode is unknown.
+    // Gate state separately tells consumers whether feedback is usable.
+    auto operation = esphome::cover::COVER_OPERATION_IDLE;
+    float position = cover->position;
+    if (state == "closed") position = esphome::cover::COVER_CLOSED;
+    else if (state == "open") position = esphome::cover::COVER_OPEN;
+    else if (state == "opening") operation = esphome::cover::COVER_OPERATION_OPENING;
+    else if (state == "closing") operation = esphome::cover::COVER_OPERATION_CLOSING;
+    if (cover->position != position || cover->current_operation != operation) {
+      cover->position = position; cover->current_operation = operation;
+      cover->publish_state(false);  // Do not persist presumed gate position.
+    }
+  }
   void publish_feedback() {
+    publish_cover(id(car_gate_cover), feedback_.car());
+    publish_cover(id(pedestrian_gate_cover), feedback_.pedestrian());
+    if (feedback_.gate() == "unavailable") id(gate_state).invalidate_state();
+    else id(gate_state).publish_state(feedback_.gate() == "open");
     if (id(gate_state_source).state != feedback_.gate()) id(gate_state_source).publish_state(feedback_.gate());
     if (id(car_state_source).state != feedback_.car()) id(car_state_source).publish_state(feedback_.car());
     if (id(pedestrian_state_source).state != feedback_.pedestrian()) id(pedestrian_state_source).publish_state(feedback_.pedestrian());

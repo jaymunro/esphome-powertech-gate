@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.7.0"
+    version: "0.8.0"
   on_boot:
     priority: -100
     then:
@@ -206,7 +206,9 @@ esphome:
           
             void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t /*iface*/,
                                      esp_ble_gattc_cb_param_t *param) override {
+              if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
               if (event == ESP_GATTC_CLOSE_EVT) {
+                id(bluetooth_connection).publish_state(false);
                 const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
                 feedback_.disconnected(); publish_feedback();
                 next_reconnect_ = millis() + reconnect_delay_;
@@ -387,7 +389,25 @@ esphome:
             bool auth_blocked_{false};
             uint16_t event_handle_{0};
             uint32_t next_reconnect_{0}, reconnect_delay_{15000};
+            static void publish_cover(esphome::cover::Cover *cover, const std::string &state) {
+              // Keep the last confirmed position when the access mode is unknown.
+              // Gate state separately tells consumers whether feedback is usable.
+              auto operation = esphome::cover::COVER_OPERATION_IDLE;
+              float position = cover->position;
+              if (state == "closed") position = esphome::cover::COVER_CLOSED;
+              else if (state == "open") position = esphome::cover::COVER_OPEN;
+              else if (state == "opening") operation = esphome::cover::COVER_OPERATION_OPENING;
+              else if (state == "closing") operation = esphome::cover::COVER_OPERATION_CLOSING;
+              if (cover->position != position || cover->current_operation != operation) {
+                cover->position = position; cover->current_operation = operation;
+                cover->publish_state(false);  // Do not persist presumed gate position.
+              }
+            }
             void publish_feedback() {
+              publish_cover(id(car_gate_cover), feedback_.car());
+              publish_cover(id(pedestrian_gate_cover), feedback_.pedestrian());
+              if (feedback_.gate() == "unavailable") id(gate_state).invalidate_state();
+              else id(gate_state).publish_state(feedback_.gate() == "open");
               if (id(gate_state_source).state != feedback_.gate()) id(gate_state_source).publish_state(feedback_.gate());
               if (id(car_state_source).state != feedback_.car()) id(car_state_source).publish_state(feedback_.car());
               if (id(pedestrian_state_source).state != feedback_.pedestrian()) id(pedestrian_state_source).publish_state(feedback_.pedestrian());
@@ -463,6 +483,7 @@ esphome:
                 fail("Could not submit command; no retry scheduled");
             }
           };
+          id(bluetooth_connection).publish_state(false);
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
@@ -581,16 +602,19 @@ text_sensor:
   - platform: template
     name: Bluetooth gate state source
     id: gate_state_source
+    internal: true
     update_interval: never
     entity_category: diagnostic
   - platform: template
     name: Bluetooth car state source
     id: car_state_source
+    internal: true
     update_interval: never
     entity_category: diagnostic
   - platform: template
     name: Bluetooth pedestrian state source
     id: pedestrian_state_source
+    internal: true
     update_interval: never
     entity_category: diagnostic
   - platform: homeassistant
@@ -745,9 +769,59 @@ sensor:
   - platform: uptime
     name: Uptime
 
+cover:
+  - platform: template
+    name: Car gate
+    id: car_gate_cover
+    device_class: gate
+    optimistic: false
+    assumed_state: false
+    restore_mode: NO_RESTORE
+    open_action:
+      - if:
+          condition:
+            lambda: return id(car_state_source).state != "unavailable" && !id(car_state_source).state.empty();
+          then:
+            - button.press: car_open_button
+          else:
+            - lambda: id(control_result).publish_state("Not sent - current car access mode is unknown");
+    close_action:
+      - button.press: car_close_button
+    stop_action:
+      - button.press: gate_stop_button
+  - platform: template
+    name: Pedestrian gate
+    id: pedestrian_gate_cover
+    device_class: gate
+    optimistic: false
+    assumed_state: false
+    restore_mode: NO_RESTORE
+    open_action:
+      - if:
+          condition:
+            lambda: return id(pedestrian_state_source).state != "unavailable" && !id(pedestrian_state_source).state.empty();
+          then:
+            - button.press: pedestrian_open_button
+          else:
+            - lambda: id(control_result).publish_state("Not sent - current pedestrian access mode is unknown");
+    close_action:
+      - button.press: pedestrian_close_button
+    stop_action:
+      - button.press: gate_stop_button
+
 binary_sensor:
+  - platform: template
+    name: Bluetooth connection
+    id: bluetooth_connection
+    device_class: connectivity
+    entity_category: diagnostic
+  - platform: template
+    name: Gate state
+    id: gate_state
+    device_class: opening
   - platform: status
     name: Status
+    disabled_by_default: true
   - platform: gpio
     id: atom_button
     pin:
@@ -787,6 +861,8 @@ button:
           id(gate_request)("READ STATUS");
   - platform: template
     name: Bluetooth car open
+    id: car_open_button
+    internal: true
     entity_category: diagnostic
     on_press:
       - lambda: |-
@@ -797,6 +873,8 @@ button:
           id(gate_request)("FULL OPEN");
   - platform: template
     name: Bluetooth car close
+    id: car_close_button
+    internal: true
     entity_category: diagnostic
     on_press:
       - lambda: |-
@@ -807,6 +885,8 @@ button:
           id(gate_request)("FULL CLOSE");
   - platform: template
     name: Bluetooth pedestrian open
+    id: pedestrian_open_button
+    internal: true
     entity_category: diagnostic
     on_press:
       - lambda: |-
@@ -817,6 +897,8 @@ button:
           id(gate_request)("PED OPEN");
   - platform: template
     name: Bluetooth pedestrian close
+    id: pedestrian_close_button
+    internal: true
     entity_category: diagnostic
     on_press:
       - lambda: |-
@@ -827,6 +909,8 @@ button:
           id(gate_request)("PED CLOSE");
   - platform: template
     name: Bluetooth stop
+    id: gate_stop_button
+    internal: true
     entity_category: diagnostic
     on_press:
       - lambda: |-

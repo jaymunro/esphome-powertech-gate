@@ -20,14 +20,20 @@ Pedestrian opening and automatic closure were physically confirmed. Both-leaf
 transmitter feedback was physically confirmed. Explicit close and Stop commands
 still need hardware validation. Do not migrate security or announcement consumers
 until your own installation passes the documented checks. UART reply contention
-with EyeOpen/cloud clients is under investigation. Missing feedback is exposed as
-unavailable; it is never replaced by an indefinitely retained closed state.
+with EyeOpen/cloud clients is under investigation.
 
-The native ESPHome cover API cannot express gate-link availability separately
-from ESP32 availability. Three small standard Home Assistant Template helpers
-present the firmware's normalized states as two covers and an opening-class
-binary sensor. Protocol, freshness and mode logic stay on the ESP32; no reed
-switches, template timers or optimistic cover position are used.
+From version 0.8.0, ESPHome publishes two native covers, **Gate state** and a
+**Bluetooth connection** diagnostic. No Home Assistant helpers are required;
+source sensors and command buttons stay internal to the firmware.
+
+Gate state is an opening-class binary sensor: Open/Closed with fresh feedback,
+**Unknown** if Bluetooth disconnects, feedback expires or the state is not yet
+confirmed, and **Unavailable** when the ESP32 cannot reach Home Assistant.
+The native covers retain their last confirmed position when feedback is lost;
+they do not independently become unavailable on a Bluetooth failure. Before
+using a cover in an automation, require Gate state to be `on` or `off`.
+A connected Bluetooth link alone does not guarantee fresh feedback. See
+[Home Assistant entity semantics](home-assistant/README.md).
 
 ## Installation
 
@@ -66,9 +72,8 @@ main. Only select a model that has been validated for your controller.
 5. Install and add the ESPHome device to Home Assistant. Enable **Bluetooth
    monitoring**. It defaults off on the first install. Leave the gate closed
    for the initial status synchronization.
-6. Create the three UI Template helpers described in
-   [home-assistant/README.md](home-assistant/README.md). Keep the firmware state
-   source sensors enabled; they are inputs to these presentation helpers.
+6. The covers, Gate state and Bluetooth connection appear automatically through
+   the native ESPHome integration. No MQTT broker or HA helpers are required.
 
 The Bluetooth hop replaces the gate's cloud path, but the ESP32 still needs a
 reliable Wi-Fi connection to Home Assistant. Start with the phone app closed for
@@ -110,7 +115,7 @@ Generated YAML is checked in for remote-package installation; edit `src/`,
 Validate pedestrian and car transmitter cycles, commanded opening/closing,
 Stop, automatic closure, Wi-Fi/Bluetooth loss, power-cycle recovery, app
 coexistence and stale-event handling. Check that only the intended access mode
-opens and that Gate state becomes unavailable when feedback is lost. Keep
+opens and that Gate state becomes Unknown when feedback is lost. Keep
 existing locking and other safety/security configuration in place during tests.
 
 Controller settings (auto-close timer, motor configuration, learning, firmware

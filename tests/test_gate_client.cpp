@@ -10,7 +10,7 @@
 #include <vector>
 using esp_err_t = int; using esp_gatt_if_t = int;
 constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0;
-enum esp_gattc_cb_event_t { ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
+enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
 struct esp_ble_gattc_cb_param_t {
   struct { int handle=0, status=0; } reg_for_notify;
@@ -38,6 +38,11 @@ uint32_t c004_count=0,capture_started_ms=0; std::vector<std::string> capture_rec
 std::string gate_pin="0000";  // Synthetic fixture only.
 #define id(x) x
 namespace esphome {
+namespace cover {
+enum CoverOperation { COVER_OPERATION_IDLE, COVER_OPERATION_OPENING, COVER_OPERATION_CLOSING };
+constexpr float COVER_CLOSED=0, COVER_OPEN=1;
+}
+
 namespace esp32_ble_tracker { enum class ClientState { IDLE,ESTABLISHED }; }
 namespace md5 { struct MD5Digest { void init() {} void add(const char *,size_t) {} void calculate() {}
   void get_bytes(uint8_t *p) { std::fill(p,p+16,0); } }; }
@@ -56,6 +61,20 @@ class BLEClientNode { public: Parent *p=nullptr; esp32_ble_tracker::ClientState 
   virtual void gattc_event_handler(esp_gattc_cb_event_t,int,esp_ble_gattc_cb_param_t *) {} };
 }}
 #include "../src/gate_feedback.inc"
+namespace esphome { namespace cover { struct Cover {
+ float position=0; esphome::cover::CoverOperation current_operation=esphome::cover::COVER_OPERATION_IDLE;
+ unsigned publications=0;
+ void publish_state(bool save) { assert(!save); ++publications; }
+}; }}
+using FakeCover=esphome::cover::Cover;
+FakeCover car_cover,ped_cover; FakeCover *car_gate_cover=&car_cover,*pedestrian_gate_cover=&ped_cover;
+struct FakeBinarySensor {
+ bool valid=false,state=false;
+ void invalidate_state() { valid=false; }
+ void publish_state(bool value) { valid=true; state=value; }
+} gate_binary;
+FakeBinarySensor &gate_state=gate_binary;
+FakeBinarySensor bluetooth_connection;
 #include "../src/gate_client_body.inc"
 
 void event(EyeOpenClient &c,esp_gattc_cb_event_t e,int handle=0,const std::string &s="",int status=0) {
@@ -200,5 +219,28 @@ int main() {
   c9.request("DISCONNECT"); assert(!monitor_enabled);
   reset(); esphome::ble_client::Parent p10; EyeOpenClient c10; c10.p=&p10;
   profile_supports_pedestrian=false; c10.request("PED OPEN"); assert(p10.connections==0 && writes.empty());
+  // Native covers follow confirmed feedback, never command acknowledgements.
+  reset(); car_cover={}; ped_cover={}; esphome::ble_client::Parent p11; EyeOpenClient c11; c11.p=&p11;
+  c11.request("READ STATUS"); discover(c11); unlock_without_challenge(c11);
+  event(c11,ESP_GATTC_CONNECT_EVT); assert(bluetooth_connection.valid && bluetooth_connection.state);
+  acknowledge(c11,"ACK STATUS:PED CLOSED,0");
+  clock_ms=16000; c11.request("READ STATUS"); acknowledge(c11,"ACK STATUS:PED CLOSED,0");
+  clock_ms+=1200; c11.request("READ STATUS"); acknowledge(c11,"ACK STATUS:PED CLOSED,0");
+  assert(gate_state_source.state=="closed");
+  assert(gate_binary.valid && !gate_binary.state);
+  c11.request("PED OPEN"); acknowledge(c11,"ACK PED OPEN");
+  assert(car_cover.position==0 && ped_cover.position==0);
+  clock_ms+=1200; c11.request("READ STATUS"); acknowledge(c11,"ACK STATUS:SINGLE STOPPED,25");
+  assert(ped_cover.position==0);  // Candidate alone is insufficient.
+  clock_ms+=1200; c11.request("READ STATUS"); acknowledge(c11,"ACK STATUS:SINGLE STOPPED,25");
+  assert(car_cover.position==0 && ped_cover.position==1);
+  assert(gate_binary.valid && gate_binary.state);
+  clock_ms+=26000; c11.maintenance();
+  assert(!gate_binary.valid && bluetooth_connection.state && ped_cover.position==1);
+  event(c11,ESP_GATTC_CLOSE_EVT);
+  assert(gate_state_source.state=="unavailable" && ped_cover.position==1);
+  assert(!gate_binary.valid);
+  assert(!bluetooth_connection.state);
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_IDLE);
   puts("Protocol and transaction checks passed, including unrelated replies, bounded polling/backoff/recovery and preserved movement results (mock Bluetooth/hash). ");
 }

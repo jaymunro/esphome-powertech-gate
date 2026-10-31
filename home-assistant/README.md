@@ -1,29 +1,44 @@
-# Home Assistant presentation entities
+# Native Home Assistant entities
 
-After adding the ESPHome device, create three helpers through **Settings →
-Devices & services → Helpers → Create helper → Template**. `helpers.json`
-contains the fields for two Cover helpers and one Binary sensor helper. Choose
-**Gate** as the covers' device class and **Opening** for Gate state. The latter
-shows Open/Closed while using on/off internally.
+Version 0.8.0 publishes the entities directly from ESPHome YAML. No HA Template
+helpers or MQTT broker are needed. Underlying normalized state sensors and
+movement buttons are internal and are not advertised to Home Assistant.
 
-The example uses `powertech_gate` as the ESPHome entity prefix and
-`lock.gate_lock` as the optional opening guard. Adjust these to the actual
-entity IDs in your installation. Set the same lock policy in the firmware;
-if using no software lock, remove the helper's lock condition deliberately.
-Attach the helpers to the ESPHome device in the helper's Device field.
+- **Car gate** and **Pedestrian gate** are mutually exclusive access modes,
+  not leaf-position sensors. Pedestrian open means car closed, and vice versa.
+- **Gate state** uses the Opening binary-sensor class: `on` = Open, `off` =
+  Closed. Missing/unconfirmed/stale Bluetooth feedback gives **Unknown**;
+  losing the ESP32 connection gives **Unavailable**. No reed switch is used.
+- **Bluetooth connection** uses the Connectivity class and shows the actual
+  GATT link, Connected/Disconnected. Connected does not imply authenticated,
+  synchronized or fresh feedback. Consult Gate state for that.
+- **Status** (bridge connection) defaults disabled because other entities already
+  show Unavailable on an ESP32 disconnect. It can be enabled for diagnostics.
 
-Under Additional options set each availability template exactly as shown.
-The template entity only presents a firmware state; it does not infer timing,
-combine reed switches or maintain independent state. Its actions press one
-allowlisted ESPHome button. There is no position-slider action.
+Covers are non-optimistic. A command ACK does not update them. When the access
+mode is unknown, they retain the last confirmed position and clear the displayed
+movement operation. On boot they have no trustworthy remembered gate position;
+**ignore covers until Gate state is valid**. Unknown access mode during movement
+can also leave cover positions unchanged even when Gate state is Open. Gate
+state alone does not prove that the car/pedestrian access mode is known.
 
-Keep source sensors and command buttons enabled because the helpers reference
-them. Hide them from the device page after setup if desired. Useful visible
-diagnostics are polling health, last control result, controller status and
-Wi-Fi signal strength. Keep experimental gate entities out of voice assistants
-until your installation has completed physical and recovery testing.
+For automation conditions, accept only Gate state's raw `on` or `off`; reject
+both `unknown` and `unavailable`. For example, combine two native state
+conditions in OR, or use an explicit state condition for the intended Open or
+Closed condition. Both covers Closed is not proof the gate is physically shut.
+Opening commands are blocked if their access mode is unknown, and the optional
+software-lock guard still applies. Close and Stop remain callable independently.
 
-Car and pedestrian covers are exclusive access modes. Pedestrian open means
-car closed; car open means pedestrian closed. Only Gate state represents
-whether the controller reports the gate physically closed. Both covers being
-closed is not a substitute for a fresh, available Gate state entity.
+## Upgrading from 0.7.x helpers
+
+Back up the three helper configurations and check all their consumers first.
+Install 0.8.0, confirm native states and loss/recovery behavior, then remove only
+the old car/pedestrian/Gate state Template helpers. Rename the new entities to
+previous IDs if needed and preserve voice-assistant exclusions. Do not remove
+existing cloud, Shelly, reed-switch or security consumers as part of this step.
+The API may add a numeric suffix while old helper IDs are occupied.
+
+Gate state changed failure semantics from helper Unavailable to native Unknown.
+Update any automation that checks only for Unavailable to reject Unknown too.
+Keep experimental entities out of voice assistants until physical control and
+recovery testing is complete. Explicit close and Stop still need hardware tests.
