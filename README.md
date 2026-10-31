@@ -109,6 +109,20 @@ Stop retains priority and the software lock is rechecked before a queued open.
 
 ## Controller definitions
 
+### Experimental settings snapshot (settings-readonly branch)
+
+The PS19001 profile has an optional **Read controller settings** configuration
+button, disabled by default. It sends one serialized legacy `READ FUNCTION`
+request using the existing authenticated connection. It works while the HA
+software gate lock is locked because it cannot move the gate.
+
+The complete response stays internal and is logged in numbered `gate_settings`
+chunks. Unknown fields are preserved. Capturing a reply does not validate its
+parameter meanings or indicate that any settings were saved. No parameter write,
+learning, reset or alternate-protocol commands are allowlisted. This experimental
+branch does not yet expose editable settings, and the request is never scheduled
+as part of automatic polling or reconnect recovery.
+
 A definition is a small JSON file under `models/`, with its supported transport,
 status signatures, position semantics, pedestrian capability and validation
 record. `tools/generate.py` validates definitions and generates model packages.

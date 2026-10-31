@@ -16,6 +16,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
   }
   void request(const std::string &command) {
+    if (command == "READ FUNCTION" && id(profile_model) != "PS19001") {
+      status("Settings read not validated for this controller profile"); return;
+    }
     if (command == "DISCONNECT") {
       id(monitor_enabled) = false;
       feedback_.disconnected(); publish_feedback();
@@ -191,6 +194,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
             publish_feedback();
             id(poll_health).publish_state("Status reply received");
             id(status_successes).publish_state(++status_successes_);
+          } else if (finished == "READ FUNCTION") {
+            std::string snapshot;
+            if (function_reply(reply, snapshot)) {
+              id(settings_snapshot).publish_state(snapshot);
+              status("Settings snapshot captured; parameter decoding not yet validated");
+            }
           } else {
             id(control_result).publish_state("Acknowledged: " + finished);
             if (finished == "PED OPEN" || finished == "FULL OPEN")
@@ -217,10 +226,11 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   }
 
   static bool allowed(const std::string &c) {
-    return c == "READ STATUS" || c == "FULL OPEN" || c == "FULL CLOSE" ||
+    return c == "READ STATUS" || c == "READ FUNCTION" || c == "FULL OPEN" || c == "FULL CLOSE" ||
            c == "PED OPEN" || c == "PED CLOSE" || c == "STOP";
   }
   static bool matching_ack(const std::string &reply, const std::string &command) {
+    if (command == "READ FUNCTION") { std::string snapshot; return function_reply(reply, snapshot); }
     if (command == "READ STATUS") {
       GateFeedback::Sample sample; return GateFeedback::parse_reply(reply, sample);
     }
@@ -237,6 +247,27 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       start = end + 1;
     }
     return false;
+  }
+  // Capture a complete legacy read response without interpreting or rewriting
+  // its fields. Unknown fields and suffixes are deliberately preserved.
+  static bool function_reply(const std::string &reply, std::string &out) {
+    out.clear();
+    if (reply.size() > 2048) return false;
+    size_t start = 0;
+    while (start < reply.size()) {
+      const auto end = reply.find_first_of("\r\n", start);
+      auto line = reply.substr(start, end == std::string::npos ? end : end-start);
+      if (line.rfind("C=",0)==0) line.erase(0,2);
+      if (line.rfind("ACK READ FUNCTION:",0)==0) {
+        if (line.size() <= 18 || !std::all_of(line.begin(),line.end(),
+            [](unsigned char c){return c>=32 && c<=126;})) { out.clear(); return false; }
+        if (!out.empty() && out != line) { out.clear(); return false; }
+        out=line;
+      }
+      if (end==std::string::npos) break;
+      start=end+1;
+    }
+    return !out.empty();
   }
   static std::string field(const std::string &value, const std::string &key) {
     size_t start = 0;

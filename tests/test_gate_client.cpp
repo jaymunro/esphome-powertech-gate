@@ -34,7 +34,7 @@ Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
 int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=1; bool profile_supports_pedestrian=true;
-Text control_result,poll_health; Number status_successes,unmatched_replies;
+Text control_result,poll_health,settings_snapshot; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;
 Number c004_packets; bool control_session=false,gate_listening=false;
 uint32_t c004_count=0,capture_started_ms=0; std::vector<std::string> capture_records;
@@ -98,6 +98,18 @@ void acknowledge(EyeOpenClient &c,const std::string &reply) {
   event(c,ESP_GATTC_WRITE_CHAR_EVT,106); tick(c,200); event(c,ESP_GATTC_READ_CHAR_EVT,106,reply);
 }
 int main() {
+  assert(EyeOpenClient::allowed("READ FUNCTION"));
+  assert(!EyeOpenClient::allowed("WRITE FUNCTION 1:1"));
+  assert(!EyeOpenClient::allowed("RP,1"));
+  assert(!EyeOpenClient::allowed("WP,1:1"));
+  std::string snapshot;
+  assert(EyeOpenClient::function_reply("ERROR:READ LIGHT STATUS\r\nC=ACK READ FUNCTION:1:1,J:1,Z:AB;extra=keep",snapshot));
+  assert(snapshot=="ACK READ FUNCTION:1:1,J:1,Z:AB;extra=keep");
+  assert(!EyeOpenClient::function_reply("ACK READ FUNCTION:",snapshot));
+  assert(!EyeOpenClient::function_reply("ACK READ FUNCTIONBAD:1:1",snapshot));
+  assert(!EyeOpenClient::function_reply("ACK READ FUNCTION:1:1\nACK READ FUNCTION:1:2",snapshot));
+  assert(!EyeOpenClient::function_reply("ACK READ FUNCTION:"+std::string(2048,'1'),snapshot));
+  assert(!EyeOpenClient::function_reply(std::string("ACK READ FUNCTION:1:1")+char(0),snapshot));
   assert(EyeOpenClient::allowed("PED OPEN"));
   assert(!EyeOpenClient::allowed("FACTORY DEFAULT"));
   assert(!EyeOpenClient::allowed("PED OPEN;FULL OPEN"));
@@ -323,5 +335,23 @@ int main() {
   acknowledge(c15,"ACK STATUS:PED CLOSED,0"); tick(c15,50);
   for(const auto &w:writes) assert(w.payload=="C=READ STATUS;src=P9999999");
   assert(control_result.state.find("lock changed")!=std::string::npos);
+  // Manual settings reads share the serialized transport but do not act like
+  // movement ACKs, invalidate good feedback, or publish truncated snapshots.
+  reset(); settings_snapshot.state.clear();
+  esphome::ble_client::Parent p16; EyeOpenClient c16; c16.p=&p16;
+  c16.request("READ STATUS"); discover(c16); unlock_without_challenge(c16);
+  acknowledge(c16,"ACK STATUS:PED CLOSED,0");
+  clock_ms=16000; c16.request("READ STATUS"); acknowledge(c16,"ACK STATUS:PED CLOSED,0");
+  clock_ms+=1200; c16.request("READ STATUS"); acknowledge(c16,"ACK STATUS:PED CLOSED,0");
+  assert(gate_binary.valid && !gate_binary.state);
+  gate_lock_state.state="locked"; c16.request("READ FUNCTION");
+  assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  const std::string complete="ACK READ FUNCTION:1:1,J:1,Z:"+std::string(300,'A');
+  acknowledge(c16,complete);
+  assert(settings_snapshot.state==complete && gate_binary.valid && !gate_binary.state);
+  const auto after_settings=writes.size(); tick(c16,1000);
+  for(size_t i=after_settings;i<writes.size();++i) assert(writes[i].payload=="C=READ STATUS;src=P9999999");
+  event(c16,ESP_GATTC_CLOSE_EVT); tick(c16,100000);
+  for(const auto &w:writes) assert(w.payload.find("WRITE FUNCTION")==std::string::npos);
   puts("Protocol and transaction checks passed, including unrelated replies, bounded polling/backoff/recovery and preserved movement results (mock Bluetooth/hash). ");
 }
