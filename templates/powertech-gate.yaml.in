@@ -16,7 +16,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev4"
+    version: "0.9.0-dev5"
   on_boot:
     priority: -100
     then:
@@ -152,7 +152,7 @@ text_sensor:
   - platform: template
     id: settings_result
     name: Settings update result
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: settings_snapshot

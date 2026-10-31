@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev4"
+    version: "0.9.0-dev5"
   on_boot:
     priority: -100
     then:
@@ -912,98 +912,98 @@ text_sensor:
   - platform: template
     id: setting_1
     name: "Motor type"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_2
     name: "Overcurrent when opening"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_3
     name: "Overcurrent when closing"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_4
     name: "Motor speed when opening"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_5
     name: "Motor speed when closing"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_6
     name: "Deceleration speed"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_7
     name: "Time gap b/w dual gates (opening)"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_8
     name: "Time gap b/w dual gates (closing)"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_a
     name: "Safety Device Function Mode"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_b
     name: "Pedestrian mode"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_c
     name: "Flashing light"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_d
     name: "Photocell activation"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_e
     name: "Photocell 2 activation"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_f
     name: "Alarm Buzzer"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_g
     name: "Electric latch mode"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_h
     name: "LED direction"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_i
     name: "Dual / Single gate"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: setting_j
     name: "Over current reverses duration when closing"
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
 
   - platform: template
     id: settings_result
     name: Settings update result
-    entity_category: config
+    entity_category: diagnostic
     update_interval: never
   - platform: template
     id: settings_snapshot

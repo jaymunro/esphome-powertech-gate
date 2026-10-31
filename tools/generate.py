@@ -38,7 +38,7 @@ def outputs():
         ident='setting_'+f['field'].lower()
         publish.append(f'    id({ident}).publish_state(value({i}));')
         if f['field']!='9':
-            sensors.append(f'  - platform: template\n    id: {ident}\n    name: {json.dumps(f["name"])}\n    entity_category: config\n    update_interval: never\n')
+            sensors.append(f'  - platform: template\n    id: {ident}\n    name: {json.dumps(f["name"])}\n    entity_category: diagnostic\n    update_interval: never\n')
     settings_source=settings_template.replace('@@SETTINGS_FIELDS@@','\n'.join(specs)).replace('@@SETTINGS_PUBLISH@@','\n'.join(publish))
     select='select:\n  - platform: template\n    id: setting_9\n    name: Auto-closing\n    entity_category: config\n    lambda: return {};\n    update_interval: never\n    options:\n'+''.join('      - '+json.dumps(x)+'\n' for x in fields[8]['options'])+'    set_action:\n      - lambda: |-\n          const auto index = id(setting_9).index_of(x);\n          if (index.has_value() && id(gate_settings_change)) id(gate_settings_change)(int(index.value()));\n'
     template=(ROOT/'templates/powertech-gate.yaml.in').read_text()

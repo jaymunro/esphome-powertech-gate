@@ -58,6 +58,16 @@ int main() {
  tolerant.accept({"PED CLOSED",2},26000);
  assert(tolerant.accept({"PED CLOSED",2},28000)); assert(tolerant.gate()!="closed");
  tolerant.tick(53001); assert(!tolerant.available());
+ // P3.6 also returned CLOSED,2 with both leaves visually confirmed shut.
+ GateFeedback confirmed_two({"PS19001", "SINGLE STOPPED", 95, 0, true, 2});
+ confirmed_two.connected(0);
+ assert(!confirmed_two.accept({"PED CLOSED",2},16000));
+ assert(confirmed_two.accept({"PED CLOSED",2},18000));
+ assert(confirmed_two.gate()=="closed");
+ confirmed_two.accept({"PED CLOSING",0},20000);
+ assert(confirmed_two.accept({"PED CLOSING",0},22000) && confirmed_two.gate()=="open");
+ confirmed_two.accept({"PED CLOSED",3},24000);
+ assert(confirmed_two.accept({"PED CLOSED",3},26000) && confirmed_two.gate()!="closed");
  // A bounded local command hint identifies the access mode only after movement.
  GateFeedback hinted; hinted.connected(0);
  hinted.accept({"PED CLOSED",0},16000); assert(hinted.accept({"PED CLOSED",0},18000));

@@ -34,7 +34,7 @@ or Closing, when feedback is lost or awaiting confirmation. They can therefore
 still display movement after a lost connection until fresh feedback returns;
 they do not independently become unavailable on a Bluetooth failure. Before
 using a cover in an automation, require Gate state to be `on` or `off`.
-PS19001 permits a one-unit closed-position tolerance only with an explicit
+PS19001 permits a two-unit closed-position tolerance only with an explicit
 CLOSED status and repeated fresh confirmation. Shared UART reply mismatches
 retry status reads after 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
@@ -112,7 +112,8 @@ Stop retains priority and the software lock is rechecked before a queued open.
 ### Configuration entities (settings-readonly branch)
 
 All 19 PS19001 parameters are native ESPHome configuration entities. Eighteen
-are read-only text sensors; **Auto-closing** is a native select with the app's
+are read-only diagnostic text sensors (Home Assistant disallows Configuration
+category on sensors); **Auto-closing** is a native select with the app's
 Off and timer choices. The select remains unknown at startup until a validated
 controller read arrives; it never restores a presumed setting from flash.
 

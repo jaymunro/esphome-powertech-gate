@@ -9,6 +9,6 @@
   "tested_firmware": [
     "P3.6"
   ],
-  "validation": "Pedestrian control and car/pedestrian transmitter feedback observed; explicit close and Stop remain pending. Fresh CLOSED,1 observed with physically closed gate after closing-reversal setting changed; closed tolerance is one protocol unit and still requires CLOSED status.",
-  "closed_position_tolerance": 1
+  "validation": "Pedestrian control and car/pedestrian transmitter feedback observed; explicit close and Stop remain pending. Fresh CLOSED positions 0, 1 and 2 observed with user-confirmed physically closed gate after closing reversal; the two-unit tolerance still requires explicit CLOSED status and repeated fresh confirmation.",
+  "closed_position_tolerance": 2
 }
