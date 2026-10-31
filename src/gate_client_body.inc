@@ -93,9 +93,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     const uint32_t now = millis();
     feedback_.tick(now); publish_feedback();
     if (phase_ == IDLE_CONNECTED) {
+      if(auto_settings_ && due(now,next_settings_refresh_)) settings_due_=true;
       if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.available() && feedback_.gate()=="closed" &&
          uint32_t(now-last_poll_)>=500 && id(profile_model)=="PS19001") {
-        settings_due_=false; busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
+        settings_due_=false; settings_read_retries_=0;
+        next_settings_refresh_=now+300000;
+        busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
       }
       if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
         status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
@@ -383,7 +386,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   unsigned settings_read_retries_{0};
   bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false}, settings_uncertain_{false};
   std::string settings_wire_;
-  uint32_t last_uart_reply_{0};
+  uint32_t last_uart_reply_{0}, next_settings_refresh_{0};
   GateSettings edit_baseline_;
   void cancel_settings(const std::string &message) {
     if(edit_stage_!=EDIT_IDLE && settings_write_sent_) settings_uncertain_=true;
@@ -391,7 +394,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     edit_stage_=EDIT_IDLE; desired_field_=0; desired_option_.clear(); settings_read_retries_=0; settings_wire_.clear(); settings_write_sent_=false;
   }
   void accept_settings(const std::string &snapshot) {
-    settings_due_=false;
+    settings_due_=false; next_settings_refresh_=millis()+300000;
     GateSettings settings;
     if(!settings.decode(snapshot)) {
       cancel_settings("Invalid settings snapshot; no further write scheduled");
@@ -485,7 +488,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       const bool submitted=settings_write_sent_;
       cancel_settings(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; no configuration write sent");
       id(settings_result).publish_state(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; refresh settings to try again");
-      settings_due_=false; wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+      settings_due_=false; next_settings_refresh_=millis()+30000;
+      wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
       if(urgent_stop_ || !user_command_.empty()) { busy_=true; phase_=COMMAND_WAIT; deadline_=millis()+50; }
       return;
     }

@@ -24,4 +24,9 @@ class Profiles(unittest.TestCase):
  def test_rejects_boolean_closed_tolerance(self):
   self.p['closed_position_tolerance']=True
   with self.assertRaises(ValueError): module.validate(self.p)
+ def test_autonomous_package(self):
+  source=(ROOT/'templates/powertech-gate.yaml.in').read_text()
+  self.assertIn("id: monitor_enabled\n    type: bool\n    restore_value: false\n    initial_value: 'true'",source)
+  self.assertNotIn('id: monitor_switch',source)
+  self.assertNotIn('id: read_settings_button',source)
 if __name__=='__main__': unittest.main()

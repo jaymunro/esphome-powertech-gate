@@ -16,7 +16,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-dev8"
+    version: "0.9.0-alpha.1"
   on_boot:
     priority: -100
     then:
@@ -119,8 +119,8 @@ globals:
     restore_value: false
   - id: monitor_enabled
     type: bool
-    restore_value: true
-    initial_value: 'false'
+    restore_value: false
+    initial_value: 'true'
   - id: gate_maintenance
     type: std::function<void()>
     restore_value: false
@@ -129,21 +129,6 @@ interval:
   - interval: 1s
     then:
       - lambda: if (id(gate_maintenance)) id(gate_maintenance)();
-
-switch:
-  - platform: template
-    name: Bluetooth monitoring
-    id: monitor_switch
-    entity_category: config
-    lambda: return id(monitor_enabled);
-    turn_on_action:
-      - lambda: |-
-          id(monitor_enabled) = true;
-          if (!id(control_session) && id(gate_request)) id(gate_request)("READ STATUS");
-    turn_off_action:
-      - lambda: |-
-          id(monitor_enabled) = false;
-          if (id(gate_request)) id(gate_request)("DISCONNECT");
 
 @@SETTINGS_SELECT@@
 
@@ -436,18 +421,6 @@ binary_sensor:
       - script.execute: gate_scan
 
 button:
-  - platform: template
-    name: Read controller settings
-    id: read_settings_button
-    entity_category: config
-    disabled_by_default: true
-    on_press:
-      - lambda: |-
-          if (!id(gate_request)) return;
-          if (id(gate_listen).is_running() || id(gate_inspect).is_running()) {
-            id(command_status).publish_state("Another Bluetooth test is active; settings read not sent"); return;
-          }
-          id(gate_request)("READ FUNCTION");
   - platform: template
     name: Start gate discovery
     internal: true

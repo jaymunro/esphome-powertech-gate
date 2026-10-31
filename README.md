@@ -76,16 +76,16 @@ main. Only select a model that has been validated for your controller.
 4. The opening guard defaults on. Supply an existing HA lock entity that reports
    `unlocked`, or deliberately set `require_gate_unlock: "false"` if you do not
    have a software lock. Unknown/locked blocks opening while the guard is on.
-5. Install and add the ESPHome device to Home Assistant. Enable **Bluetooth
-   monitoring**. It defaults off on the first install. Leave the gate closed
-   for the initial status synchronization.
+5. Install and add the ESPHome device to Home Assistant. Bluetooth monitoring
+   starts automatically on every boot and reconnects after a link failure. Leave
+   the gate closed for the initial status synchronization.
 6. The covers, Gate state and Bluetooth connection appear automatically through
    the native ESPHome integration. No MQTT broker or HA helpers are required.
 
 The Bluetooth hop replaces the gate's cloud path, but the ESP32 still needs a
 reliable Wi-Fi connection to Home Assistant. Start with the phone app closed for
-baseline testing, then test coexistence separately. Monitoring can be paused
-before connecting another Bluetooth client.
+baseline testing, then test coexistence separately. The gate can accept a limited number of Bluetooth clients; close the phone app
+when diagnosing contention.
 
 ## Polling and movement feedback
 
@@ -136,11 +136,13 @@ change is rejected; choose compatible thresholds first. No default or nearest
 threshold is substituted. Hall mappings are derived from the Android model and
 covered by host tests, but have not been physically validated on Hall hardware.
 
-**Read controller settings** refreshes all values (optional button, disabled by
-default). Normal connection synchronization also reads them. **Settings update
-result** explains validation, rejected edits and uncertain outcomes. Settings
-retain the last validated values during loss of feedback; they are not a live
-settings stream. The original 18 read-only sensor entities are replaced by
+Settings refresh automatically after connection/status synchronization, after a
+save, and every five minutes while feedback confirms the gate is closed. An
+exhausted configuration-read attempt is scheduled again after 30 seconds, with
+the same Closed/idle guard. No monitoring switch or manual refresh button is
+published to Home Assistant. **Settings update result** explains validation,
+rejected edits and uncertain outcomes. Settings retain their last validated
+values during loss of feedback; they are not a continuous settings stream. The original 18 read-only sensor entities are replaced by
 `select.*` entities with the same names; Auto-closing keeps its existing select.
 Update any consumers of the old `sensor.*` settings entities during migration.
 Covers, Gate state, Bluetooth connection and unrelated entity IDs are unchanged.
@@ -162,7 +164,8 @@ If a write acknowledgement is lost, the bridge checks the actual configuration
 by reading it; it never repeats the write. A complete matching readback establishes
 success even without that acknowledgement. Exhausted read recovery reports an
 uncertain save, blocks further edits until a fresh configuration read, and resumes
-normal status polling. Transport failures still disconnect. An uncertain outcome
+normal status polling. An automatic read is scheduled after 30 seconds to resolve
+the uncertainty when fresh Closed feedback is available. Transport failures still disconnect. An uncertain outcome
 survives disconnect messages until a fresh read resolves it. These measures reduce
 reply contention; this protocol has no compare-and-swap or transaction identifier,
 so concurrent edits from another app cannot be made atomic. Avoid editing settings

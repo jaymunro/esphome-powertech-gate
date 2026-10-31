@@ -436,6 +436,28 @@ int main() {
   tick(c22,500); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c22,base); assert(setting_1.state=="Overcurrent" && setting_9.state=="Function OFF");
   assert(settings_write_count()==0);
+  // Automatic settings refresh repeats after five minutes, defers until fresh
+  // Closed feedback, and observes external changes without configuration writes.
+  monitor_enabled=true;
+  tick(c22,300000); assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(c22,"ACK STATUS:PED CLOSED,0");
+  tick(c22,1000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");
+  tick(c22,500);assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c22,changed);assert(setting_9.state=="10 sec" && settings_write_count()==0);
+  // A full round of overwritten reads ends with a scheduled automatic recovery
+  // read after 30 seconds, rather than needing a Home Assistant button.
+  tick(c22,300000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");
+  tick(c22,1000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");tick(c22,500);
+  for(int attempt=0;attempt<4;++attempt) {
+    if(attempt) tick(c22,1600);
+    acknowledge(c22,"unrelated");
+    for(int i=0;i<2;++i) {tick(c22,750);event(c22,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+  }
+  assert(settings_result.state.find("read did not match")!=std::string::npos);
+  tick(c22,30000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");
+  tick(c22,1000);acknowledge(c22,"ACK STATUS:PED CLOSED,0");tick(c22,500);
+  assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(c22,base);assert(setting_9.state=="Function OFF" && settings_write_count()==0);
   // Status/configuration turnaround is paced, rather than writing immediately
   // into the module's previous UART transaction.
   reset(); esphome::ble_client::Parent p23; EyeOpenClient c23(false); c23.p=&p23; ready(c23);
