@@ -190,6 +190,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       const std::string value(reinterpret_cast<const char *>(param->notify.value),
                               std::min(size_t(param->notify.value_len),size_t(128)));
       feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+      // A new event is a reason to leave idle UART-mismatch backoff now.
+      // It only requests status; failed requests still regain bounded backoff.
+      if(phase_==IDLE_CONNECTED) poll_failures_=0;
       // Refresh the UART request rather than rereading an overwritten buffer.
       // Never overlap an outstanding GATT write/read or resend a motion command.
       if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 &&

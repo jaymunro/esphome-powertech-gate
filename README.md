@@ -102,7 +102,7 @@ latency and bounded mismatch recovery add time. Only one transaction is in fligh
 A notification prompts a fresh status read; it never directly establishes state.
 If a notification arrives while a status transaction is waiting on unrelated
 reply content, the bridge submits one fresh READ STATUS after the outstanding
-GATT operation completes. This bounded refresh never repeats a movement command.
+GATT operation completes. A new event also leaves idle mismatch backoff promptly. This bounded refresh never repeats a movement command.
 Compatible endpoint notifications preserve a pending fresh confirmation rather
 than restarting its timer; stable Closed still requires fresh revalidation.
 A fresh confirmed Gate state is retained while notifications or new candidate
@@ -117,8 +117,8 @@ cannot report Opening/Open by itself: two subsequent status samples must confirm
 actual movement. The hint is discarded on disconnection or expiry, and explicit
 endpoint status overrides it. The PS19001 profile also opts into an event-mode
 hint: exact C004 `Opening` means car and `PedOpening` means pedestrian. It is
-accepted only in an already synchronized session with a recently confirmed Closed
-baseline, then corroborated by two progressing OPENING status reads. Replayed
+accepted only in an already synchronized session with a Closed
+baseline still within the existing 25-second physical freshness limit, then corroborated by two progressing OPENING status reads. Replayed
 events followed by Closed, conflicting hints, reversed readings and expired hints
 cannot classify an opening. The PED/FULL prefix in status replies is never used
 to classify access mode. Untimestamped events still have residual ambiguity if an

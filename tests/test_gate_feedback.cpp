@@ -216,5 +216,17 @@ int main() {
  // The next external pedestrian cycle is independent of the previous car mode.
  recorded.event(53000,"PedOpening");recorded.accept({"FULL OPENING",4},53500);
  recorded.accept({"FULL OPENING",10},54100);assert(recorded.pedestrian()=="opening" && recorded.car()=="closed");
+ // Live alpha9 counterexample: UART contention made a valid Closed baseline
+ // 7.27 seconds old. Use the established 25s physical freshness limit, not a
+ // second 5s cutoff that discards a correctly corroborated external opening.
+ GateFeedback contention({"PS19001","SINGLE STOPPED",95,0,true,5,true});contention.connected(0);
+ contention.accept({"PED CLOSED",1},15000);contention.accept({"PED CLOSED",1},16739);
+ contention.event(24009,"Opening;src=fixture");
+ contention.accept({"PED OPENING",35},25959);
+ assert(contention.accept({"PED OPENING",45},26666));assert(contention.car()=="opening");
+ // An expired Closed baseline cannot lend credibility to a replayed event.
+ auto expired_baseline=closed_events();expired_baseline.event(44001,"Opening");
+ expired_baseline.accept({"PED OPENING",14},44500);expired_baseline.accept({"PED OPENING",24},45100);
+ assert(expired_baseline.car()=="unavailable" && expired_baseline.pedestrian()=="unavailable");
  puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and guarded C004 hints.");
 }

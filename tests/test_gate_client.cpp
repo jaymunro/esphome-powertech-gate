@@ -649,6 +649,11 @@ int main() {
   for(int i=0;i<2;++i){tick(c34,750);event(c34,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
   assert(p34.disconnections==0 && poll_health.state.find("mismatch 1")!=std::string::npos);
   for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
+  // Capture regression: an Opening arriving after exhausted reads must bypass
+  // idle backoff, not wait for its 1/2/5-second retry deadline.
+  const auto backed_off_writes=writes.size();
+  event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");tick(c34,0);
+  assert(writes.size()==backed_off_writes+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   // If a read is in flight, refresh only after its mismatching result arrives.
   reset();esphome::ble_client::Parent p35;EyeOpenClient c35(false);c35.p=&p35;ready(c35);
   tick(c35,1000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);

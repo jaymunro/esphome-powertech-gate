@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.9"
+    version: "0.9.0-alpha.10"
   on_boot:
     priority: -100
     then:
@@ -52,7 +52,7 @@ esphome:
                    (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
                   event_conflict_=true; event_mode_.clear(); hint_pending_=false;
                 } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
-                          baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=5000 &&
+                          baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=25000 &&
                           (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
                   event_mode_=event_mode; event_at_=now;
                 }
@@ -527,6 +527,9 @@ esphome:
                 const std::string value(reinterpret_cast<const char *>(param->notify.value),
                                         std::min(size_t(param->notify.value_len),size_t(128)));
                 feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+                // A new event is a reason to leave idle UART-mismatch backoff now.
+                // It only requests status; failed requests still regain bounded backoff.
+                if(phase_==IDLE_CONNECTED) poll_failures_=0;
                 // Refresh the UART request rather than rereading an overwritten buffer.
                 // Never overlap an outstanding GATT write/read or resend a motion command.
                 if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 &&

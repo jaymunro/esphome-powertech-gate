@@ -27,7 +27,7 @@ class GateFeedback {
          (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
         event_conflict_=true; event_mode_.clear(); hint_pending_=false;
       } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
-                baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=5000 &&
+                baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=25000 &&
                 (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
         event_mode_=event_mode; event_at_=now;
       }
