@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.8.0"
+    version: "0.8.1"
   on_boot:
     priority: -100
     then:
@@ -623,21 +623,25 @@ text_sensor:
     internal: true
   - platform: template
     name: Bluetooth last control result
+    disabled_by_default: true
     id: control_result
     update_interval: never
     entity_category: diagnostic
   - platform: template
     name: Bluetooth polling health
+    disabled_by_default: true
     id: poll_health
     update_interval: never
     entity_category: diagnostic
   - platform: template
     name: Bluetooth command status
+    disabled_by_default: true
     id: command_status
     update_interval: never
     entity_category: diagnostic
   - platform: template
     name: Bluetooth status reply
+    disabled_by_default: true
     id: status_reply
     update_interval: never
     entity_category: diagnostic
@@ -745,18 +749,21 @@ text_sensor:
 sensor:
   - platform: template
     name: Bluetooth status replies
+    disabled_by_default: true
     id: status_successes
     update_interval: never
     accuracy_decimals: 0
     entity_category: diagnostic
   - platform: template
     name: Bluetooth unmatched reply reads
+    disabled_by_default: true
     id: unmatched_replies
     update_interval: never
     accuracy_decimals: 0
     entity_category: diagnostic
   - platform: wifi_signal
     name: Wi-Fi signal strength
+    disabled_by_default: true
     update_interval: 20s
     entity_category: diagnostic
   - platform: template
@@ -768,6 +775,8 @@ sensor:
     entity_category: diagnostic
   - platform: uptime
     name: Uptime
+    disabled_by_default: true
+    entity_category: diagnostic
 
 cover:
   - platform: template
@@ -851,6 +860,7 @@ button:
       - script.execute: gate_listen
   - platform: template
     name: Query gate over Bluetooth
+    disabled_by_default: true
     entity_category: diagnostic
     on_press:
       - lambda: |-

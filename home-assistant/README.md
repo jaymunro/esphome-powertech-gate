@@ -12,6 +12,11 @@ movement buttons are internal and are not advertised to Home Assistant.
 - **Bluetooth connection** uses the Connectivity class and shows the actual
   GATT link, Connected/Disconnected. Connected does not imply authenticated,
   synchronized or fresh feedback. Consult Gate state for that.
+- Uptime, Wi-Fi signal strength, protocol diagnostics/counters and the manual
+  Refresh status button default disabled from 0.8.1. Enable them only when
+  troubleshooting. Bluetooth connection remains enabled. ESPHome has no
+  separate YAML hidden-by-default flag; disabled diagnostics are omitted from
+  the normal device view.
 - **Status** (bridge connection) defaults disabled because other entities already
   show Unavailable on an ESP32 disconnect. It can be enabled for diagnostics.
 
