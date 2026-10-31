@@ -281,6 +281,20 @@ int main() {
   acknowledge(c14,"ACK PED OPEN"); const auto after_open=writes.size(); tick(c14,0);
   assert(writes.size()==after_open+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   for(const auto &w:writes) assert(w.payload!="C=FULL OPEN;src=P9999999");
+  // Simulated complete pedestrian travel publishes real Opening/Closing phases.
+  acknowledge(c14,"ACK STATUS:PED OPENING,10");
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED OPENING,30");
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && car_cover.position==0);
+  tick(c14,500); acknowledge(c14,"ACK STATUS:SINGLE STOPPED,25");
+  assert(ped_cover.position==1 && ped_cover.current_operation==esphome::cover::COVER_OPERATION_IDLE);
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSING,10");
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_CLOSING);
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
+  assert(!gate_binary.valid);  // A single closed reply is still insufficient.
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1"); assert(!gate_binary.valid);
+  tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
+  assert(gate_binary.valid && !gate_binary.state && ped_cover.position==0 && car_cover.position==0);
+
   // The software lock is checked again after a command queued behind a poll.
   reset(); esphome::ble_client::Parent p15; EyeOpenClient c15; c15.p=&p15;
   c15.request("READ STATUS"); discover(c15); unlock_without_challenge(c15); acknowledge(c15,"ACK STATUS:PED CLOSED,0");
