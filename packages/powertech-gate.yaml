@@ -12,12 +12,13 @@ esphome:
   includes:
     - <esphome/components/md5/md5.h>
     - <esphome/core/alloc_helpers.h>
+    - <cmath>
   name: ${device_name}
   friendly_name: ${friendly_name}
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.8.6"
+    version: "0.9.0-alpha.12"
   on_boot:
     priority: -100
     then:
@@ -30,18 +31,56 @@ esphome:
               int full_open_min{95}, closed_position{0};
               bool supports_pedestrian{true};
               int closed_position_tolerance{0};
+              bool opening_event_mode_hint{false};
+              bool single_closed_after_tracked_closing{false};
             };
             GateFeedback() = default;
             explicit GateFeedback(Profile profile) : profile_(profile) {}
             void set_profile(Profile profile) { profile_ = profile; disconnected(); }
             struct Sample { std::string text; int position{-1}; };
             void connected(uint32_t now) {
+              clear_event_hint(); baseline_armed_=false; last_phase_.clear(); sample_phase_.clear();
               linked_ = true; connected_at_ = last_event_ = now; synced_ = false;
-              invalidate(); mode_.clear();
+              invalidate(); mode_.clear(); position_=-1;
             }
-            void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; }
-            void event(uint32_t now) {
-              last_event_ = now; invalidate();  // Query current status; do not replay the event as movement.
+            void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; baseline_armed_=false; clear_event_hint(); }
+            void event(uint32_t now, const std::string &payload="") {
+              const auto label=payload.substr(0,payload.find(';'));
+              if(label.empty() || label=="Opening" || label=="PedOpening" || label=="Opened" ||
+                 label=="PedOpened" || label=="Stopped") clear_closing_track();
+              const std::string event_mode=label=="Opening" ? "car" :
+                  (label=="PedOpening" && profile_.supports_pedestrian ? "pedestrian" : "");
+              if(profile_.opening_event_mode_hint && !event_mode.empty()) {
+                if((!event_mode_.empty() && event_mode_!=event_mode) ||
+                   (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
+                  event_conflict_=true; event_mode_.clear(); hint_pending_=false;
+                } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
+                          baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=25000 &&
+                          (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
+                  event_mode_=event_mode; event_at_=now;
+                }
+              }
+              // Preserve only a pending candidate that the event agrees with. An event
+              // cannot establish state, renew its age, or release the closed-write guard.
+              // A mode event can arrive after the first solicited OPENING sample. Carry
+              // that recent candidate forward, but publish nothing until another fresh,
+              // progressing read confirms it. Conflicting/old events cannot reuse it.
+              bool opening_candidate=false;
+              if(pending_ && !event_mode.empty() && !event_conflict_ && event_mode_==event_mode &&
+                 sample_phase_=="OPENING" && uint32_t(now-last_sample_)<=1500 &&
+                 uint32_t(now-candidate_at_)<=1500 &&
+                 (candidate_=="open:" || candidate_=="open:"+event_mode)) {
+                candidate_="open:"+event_mode; opening_candidate=true;
+              }
+              const bool compatible=pending_ &&
+                  (opening_candidate || (label=="Opened" && candidate_=="open:car" && (sample_phase_=="OPENED" || sample_phase_=="OPEN")) ||
+                   (label=="PedOpened" && candidate_=="open:pedestrian" && sample_phase_=="STOPPED") ||
+                   ((label=="Closed" || label=="PedClosed") && candidate_=="closed:closed" && sample_phase_=="CLOSED") ||
+                   (label=="Closing" && (sample_phase_=="CLOSING" || sample_phase_=="CLOSEING")));
+              last_event_ = now; pending_=true; if(!compatible) candidate_.clear();
+              // Untimestamped notifications only request confirmation. Preserve a fresh
+              // confirmed state; they neither establish movement nor refresh its age.
+              if(!valid_) invalidate();
             }
             void commanded_open(bool pedestrian, uint32_t now) {
               hint_mode_ = pedestrian ? "pedestrian" : "car"; hint_at_=now; hint_pending_=true;
@@ -49,17 +88,41 @@ esphome:
             }
             void clear_command_hint() { hint_pending_=false; }
             void tick(uint32_t now) {
+              if (position_ >= 0 && uint32_t(now-last_sample_) > 25000) position_=-1;
               if (valid_ && uint32_t(now - last_status_) > 25000) { invalidate(); mode_.clear(); }
             }
             bool accept(const Sample &s, uint32_t now) {
-              if (!linked_ || uint32_t(now-connected_at_) < 15000 ||
+              if (!linked_) return false;
+              position_=s.position; last_sample_=now;
+              if (uint32_t(now-connected_at_) < 15000 ||
                   (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
               const auto word = s.text.substr(s.text.find_last_of(' ')+1);
+              sample_phase_=word;
               const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
+              // A contradictory CLOSED position must never become fresh Open feedback.
+              if (word == "CLOSED" && !closed) { invalidate(); return false; }
+              const bool closing=word=="CLOSING" || word=="CLOSEING";
+              const bool tracked_closed=profile_.single_closed_after_tracked_closing && closed && linked_ && synced_ && valid_ && physical_=="open" &&
+                  closing_progress_ && uint32_t(now-closing_last_at_)<=5000 &&
+                  std::abs(closing_last_position_-profile_.closed_position)<=profile_.closed_position_tolerance &&
+                  uint32_t(now-last_status_)<=25000;
+              if(closing) {
+                if(!closing_seen_ || s.position>closing_last_position_ || uint32_t(now-closing_last_at_)>5000) {
+                  closing_seen_=true; closing_progress_=false;
+                  closing_first_at_=now; closing_first_position_=s.position;
+                }
+                closing_last_at_=now; closing_last_position_=s.position;
+                if(uint32_t(now-closing_first_at_)>=500 && s.position<closing_first_position_) closing_progress_=true;
+              } else clear_closing_track();
               std::string next_mode = closed ? "closed" : mode_;
+              bool event_hint=false;
+              if(closed) clear_event_hint();  // Replayed idle events cannot survive a fresh CLOSED read.
               if (word == "OPENING") {
                 if (last_phase_ != "OPENING") next_mode.clear();
                 if (hint_pending_ && uint32_t(now-hint_at_) < 8000) next_mode=hint_mode_;
+                else if(!event_conflict_ && !event_mode_.empty() && uint32_t(now-event_at_)<8000) {
+                  next_mode=event_mode_; event_hint=true;
+                }
               }
               if (!closed && profile_.supports_pedestrian && s.text == profile_.pedestrian_status && s.position > profile_.closed_position) next_mode = "pedestrian";
               else if (!closed && (word == "OPENED" || word == "OPEN") && s.position >= profile_.full_open_min) next_mode = "car";
@@ -67,14 +130,24 @@ esphome:
               if (!closed && next_mode == "closed") next_mode.clear();
               const std::string key = std::string(closed ? "closed" : "open") + ":" + next_mode;
               if (candidate_ != key) {
-                candidate_ = key; candidate_at_ = now; valid_ = false;
-                physical_ = car_ = pedestrian_ = "unavailable"; return false;
+                candidate_ = key; candidate_at_ = now; candidate_position_=s.position; pending_=true;
+                // Confirm a new candidate without publishing an intermediate Unknown.
+                // Freshness still expires from the last confirmed status after 25s.
+                if(!tracked_closed) return false;
               }
-              if (uint32_t(now-candidate_at_) < (closed ? 1000u : 500u)) return false;
-              valid_ = synced_ = true; last_status_ = now; mode_ = next_mode;
+              // Unlike an explicit local command, an event is untimestamped. Demand
+              // progressing physical OPENING reads before accepting its access-mode hint.
+              if(event_hint && s.position<=candidate_position_) {
+                if(s.position<candidate_position_) { event_mode_.clear(); event_conflict_=true; candidate_.clear(); }
+                return false;
+              }
+              if (!tracked_closed && uint32_t(now-candidate_at_) < (closed ? 1000u : 500u)) return false;
+              valid_ = synced_ = true; pending_=false; last_status_ = now; mode_ = next_mode;
               last_phase_=word;
               if (!closed && !next_mode.empty()) hint_pending_=false;
               physical_ = closed ? "closed" : "open";
+              baseline_armed_=closed;
+              if(!closed && !next_mode.empty()) event_mode_.clear();
               car_ = pedestrian_ = "unavailable";
               if (closed) car_ = pedestrian_ = "closed";
               else if (mode_ == "car" || mode_ == "pedestrian") {
@@ -86,7 +159,9 @@ esphome:
               }
               return true;
             }
+            int position() const { return position_; }
             bool available() const { return valid_; }
+            bool confirmed_closed() const { return valid_ && !pending_ && physical_=="closed"; }
             const std::string &gate() const { return physical_; }
             const std::string &car() const { return car_; }
             const std::string &pedestrian() const { return pedestrian_; }
@@ -113,7 +188,13 @@ esphome:
                   if (!(prefix.empty() || prefix=="PED" || prefix=="SINGLE" || prefix=="FULL") ||
                       !(word=="OPEN" || word=="OPENED" || word=="OPENING" || word=="CLOSED" ||
                         word=="CLOSING" || word=="CLOSEING" || word=="STOPPED")) return false;
-                  if (found && (out.text!=text || out.position!=pos)) return false;
+                  if (found && (out.text!=text || out.position!=pos)) {
+                    // The module can concatenate successive replies. Accept only the same
+                    // movement phase/prefix with positions progressing in its direction.
+                    const bool opening=word=="OPENING" && pos>=out.position;
+                    const bool closing=(word=="CLOSING" || word=="CLOSEING") && pos<=out.position;
+                    if (out.text!=text || !(opening || closing)) return false;
+                  }
                   out={text,pos}; found=true;
                 }
                 if(end==std::string::npos) break;
@@ -123,33 +204,215 @@ esphome:
             }
            private:
             Profile profile_;
+            int position_{-1}; uint32_t last_sample_{0};
             std::string hint_mode_,last_phase_;
             uint32_t hint_at_{0}; bool hint_pending_{false};
-            bool linked_{false},valid_{false},synced_{false};
+            std::string event_mode_,sample_phase_;
+            uint32_t event_at_{0}; int candidate_position_{-1};
+            bool baseline_armed_{false},event_conflict_{false};
+            bool closing_seen_{false},closing_progress_{false};
+            uint32_t closing_first_at_{0},closing_last_at_{0};
+            int closing_first_position_{-1},closing_last_position_{-1};
+            void clear_closing_track() { closing_seen_=closing_progress_=false; }
+            void clear_event_hint() { event_mode_.clear(); event_conflict_=false; }
+            bool linked_{false},valid_{false},synced_{false},pending_{true};
             uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
             std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};
-            void invalidate() { valid_=false; candidate_.clear(); physical_=car_=pedestrian_="unavailable"; }
+            void invalidate() { valid_=false; pending_=true; candidate_.clear(); clear_closing_track(); physical_=car_=pedestrian_="unavailable"; }
           };
           
+          // Generated field options come from settings/ps19001.json.
+          class GateSettings {
+           public:
+            struct Field { char label; int offset; bool decimal; std::vector<std::string> options; };
+            struct Record { char label; std::string raw; };
+            static const std::vector<Field> &fields() { static const std::vector<Field> definitions = {
+              {'1', 1, false, {"Overcurrent", "Limit Switch", "Hall Sensor"}},
+              {'2', 1, true, {"2 A", "3 A", "4 A", "5 A"}},
+              {'3', 1, true, {"2 A", "3 A", "4 A", "5 A"}},
+              {'4', 1, false, {"40 %", "50 %", "75 %", "100 %"}},
+              {'5', 1, false, {"40 %", "50 %", "75 %", "100 %"}},
+              {'6', 1, false, {"40 %", "50 %", "60 %", "70 %"}},
+              {'7', 0, false, {"0 sec", "2 sec", "5 sec", "10 sec", "15 sec", "20 sec", "25 sec", "35 sec", "45 sec", "55 sec"}},
+              {'8', 0, false, {"0 sec", "2 sec", "5 sec", "10 sec", "15 sec", "20 sec", "25 sec", "35 sec", "45 sec", "55 sec"}},
+              {'9', 0, false, {"Function OFF", "3 sec", "10 sec", "20 sec", "40 sec", "60 sec", "120 sec", "180 sec", "300 sec"}},
+              {'A', 1, false, {"Mode 1", "Mode 2", "Mode 3", "Mode 4"}},
+              {'B', 0, false, {"Function OFF", "Function ON"}},
+              {'C', 0, false, {"Blinks whenstarts moving", "Blinks 3 seconds before starts moving"}},
+              {'D', 0, false, {"Function OFF", "Function ON"}},
+              {'E', 0, false, {"Function OFF", "Function ON"}},
+              {'F', 0, false, {"Function OFF", "Function ON"}},
+              {'G', 0, false, {"Standard Gate Opening", "Release Gate Tension before Opening (Gate Reversing for 0.25s)"}},
+              {'H', 0, false, {"When Terminal Block is at Top", "When Terminal Block is at Bottom"}},
+              {'I', 1, false, {"Single Gate", "Dual Gate"}},
+              {'J', 0, false, {"Function OFF", "0.1 sec", "0.2 sec", "0.3 sec", "0.4 sec", "0.5 sec", "0.6 sec"}},
+            }; return definitions; }
+            static const Field &hall_current() {
+              static const Field field{'2', 5, true, {"0.5 A", "0.6 A", "0.7 A", "0.8 A", "0.9 A", "1 A", "1.1 A", "1.2 A", "1.3 A", "1.4 A", "1.5 A", "1.6 A", "1.7 A", "1.8 A", "1.9 A", "2 A", "2.1 A", "2.2 A", "2.3 A", "2.4 A", "2.5 A", "2.6 A", "2.7 A", "2.8 A", "2.9 A", "3 A", "3.1 A", "3.2 A", "3.3 A", "3.4 A", "3.5 A", "3.6 A", "3.7 A", "3.8 A", "3.9 A", "4 A"}}; return field;
+            }
+            static const Field *definition(char label, bool hall=false) {
+              if(hall && (label=='2' || label=='3')) return &hall_current();
+              for(const auto &f:fields()) if(f.label==label) return &f;
+              return nullptr;
+            }
+            static bool option_valid(char label, const std::string &option) {
+              const auto *f=definition(label);
+              if(f && std::find(f->options.begin(),f->options.end(),option)!=f->options.end()) return true;
+              return (label=='2' || label=='3') && std::find(hall_current().options.begin(),hall_current().options.end(),option)!=hall_current().options.end();
+            }
+            bool decode(const std::string &input) {
+              valid_=false; records_.clear(); values_.clear(); suffix_.clear();
+              std::string raw=input.rfind("C=",0)==0 ? input.substr(2) : input;
+              if(raw.size()<19 || raw.size()>2048 || raw.substr(0,17)!="ACK READ FUNCTION" ||
+                 (raw[17]!=',' && raw[17]!=':') || !std::all_of(raw.begin(),raw.end(),[](unsigned char c){return c>=32 && c<=126;})) return false;
+              const auto semicolon=raw.find(';');
+              if(semicolon!=std::string::npos) suffix_=raw.substr(semicolon);
+              const std::string body=raw.substr(18,semicolon==std::string::npos ? semicolon : semicolon-18);
+              size_t start=0;
+              while(start<body.size()) {
+                const auto end=body.find(',',start);
+                const auto token=body.substr(start,end==std::string::npos ? end : end-start);
+                if(token.size()<3 || token.size()>10 || token[1]!=':' ||
+                   (!(token[0]>='0' && token[0]<='9') && !(token[0]>='A' && token[0]<='Z'))) return false;
+                const auto value=token.substr(2);
+                if(!std::all_of(value.begin(),value.end(),[](char c){return (c>='0'&&c<='9')||(c>='A'&&c<='F')||(c>='a'&&c<='f');})) return false;
+                for(const auto &record:records_) if(record.label==token[0]) return false;
+                records_.push_back({token[0],value});
+                if(records_.size()>36) return false;
+                if(end==std::string::npos) break;
+                start=end+1; if(start==body.size()) return false;
+              }
+              const bool hall=std::any_of(records_.begin(),records_.end(),[](const Record &r){return r.label=='1' && r.raw=="3";});
+              for(const auto &base:fields()) {
+                const auto &field=*definition(base.label,hall);
+                const Record *record=nullptr;
+                for(const auto &r:records_) if(r.label==base.label) record=&r;
+                if(!record || record->raw.size()!=(field.decimal?2u:1u)) return false;
+                if(field.decimal && !std::all_of(record->raw.begin(),record->raw.end(),[](char c){return c>='0'&&c<='9';})) return false;
+                const int index=int(strtoul(record->raw.c_str(),nullptr,field.decimal?10:16))-field.offset;
+                if(index<0 || size_t(index)>=field.options.size()) return false;
+                values_.push_back(index);
+              }
+              valid_=true; return true;
+            }
+            bool valid() const { return valid_; }
+            int auto_close_index() const { return valid_ ? values_[8] : -1; }
+            bool hall() const { return valid_ && values_[0]==2; }
+            std::string value(size_t index) const { return valid_ && index<fields().size() ? definition(fields()[index].label,hall())->options[values_[index]] : "Unknown"; }
+            std::string value_for(char label) const {
+              for(size_t i=0;i<fields().size();++i) if(fields()[i].label==label) return value(i);
+              return "Unknown";
+            }
+            void publish() const {
+              if(!valid_) return;
+              id(setting_1).publish_state(value(0));
+              id(setting_2).publish_state(value(1));
+              id(setting_3).publish_state(value(2));
+              id(setting_4).publish_state(value(3));
+              id(setting_5).publish_state(value(4));
+              id(setting_6).publish_state(value(5));
+              id(setting_7).publish_state(value(6));
+              id(setting_8).publish_state(value(7));
+              id(setting_9).publish_state(value(8));
+              id(setting_a).publish_state(value(9));
+              id(setting_b).publish_state(value(10));
+              id(setting_c).publish_state(value(11));
+              id(setting_d).publish_state(value(12));
+              id(setting_e).publish_state(value(13));
+              id(setting_f).publish_state(value(14));
+              id(setting_g).publish_state(value(15));
+              id(setting_h).publish_state(value(16));
+              id(setting_i).publish_state(value(17));
+              id(setting_j).publish_state(value(18));
+            }
+            std::string change_command(char label,const std::string &option) const {
+              if(!valid_ || !option_valid(label,option) || (!suffix_.empty() && suffix_!=";src=P9999999")) return "";
+              const bool target_hall=label=='1' ? option=="Hall Sensor" : hall();
+              std::string out="WRITE FUNCTION";
+              for(const auto &r:records_) {
+                std::string raw=r.raw;
+                if(r.label==label || (label=='1' && target_hall!=hall() && (r.label=='2' || r.label=='3'))) {
+                  const auto *f=definition(r.label,target_hall);
+                  const std::string desired=r.label==label ? option : value_for(r.label);
+                  const auto pos=std::find(f->options.begin(),f->options.end(),desired);
+                  // Motor-type changes preserve the physical current thresholds; never
+                  // silently substitute the app's defaults or an arbitrary nearest value.
+                  if(pos==f->options.end()) return "";
+                  const int wire=int(pos-f->options.begin())+f->offset;
+                  char encoded[12]; snprintf(encoded,sizeof(encoded),f->decimal?"%02d":"%X",wire); raw=encoded;
+                }
+                out+=","+std::string(1,r.label)+":"+raw;
+              }
+              return out.size()<=400 ? out : "";
+            }
+            bool same_metadata(const GateSettings &other) const { return suffix_==other.suffix_; }
+            bool matches_command(const std::string &command) const {
+              if(!valid_ || command.rfind("WRITE FUNCTION,",0)!=0) return false;
+              std::string body="WRITE FUNCTION";
+              for(const auto &r:records_) body+=","+std::string(1,r.label)+":"+r.raw;
+              return body==command;
+            }
+            // Compatibility for the auto-close transaction fixtures.
+            std::string auto_close_command(int index) const {
+              return index>=0 && index<int(fields()[8].options.size()) ? change_command('9',fields()[8].options[index]) : "";
+            }
+            bool matches_auto_close_change(const GateSettings &before,int desired) const {
+              return suffix_==before.suffix_ && matches_command(before.auto_close_command(desired));
+            }
+           private:
+            bool valid_{false};
+            std::vector<Record> records_;
+            std::vector<int> values_;
+            std::string suffix_;
+          };
           // Embedded in the private ESPHome on_boot lambda. No credentials in this file.
           class EyeOpenClient : public esphome::ble_client::BLEClientNode {
            public:
-            EyeOpenClient() {
+            explicit EyeOpenClient(bool auto_settings=true) {
+              auto_settings_=auto_settings; settings_due_=auto_settings;
+              next_reconnect_=millis(); next_settings_refresh_=millis();
               this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
               feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
                 id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-                id(profile_closed_tolerance)});
+                id(profile_closed_tolerance), id(profile_opening_event_mode_hint), id(profile_single_closed_after_tracked_closing)});
             }
           
             void maintenance() {
+              // ESPHome disables its idle BLE-client loop. Keep our connection deadline
+              // alive independently, including when a connection produced no GATT event.
+              if(id(control_session)) loop();
               feedback_.tick(millis()); publish_feedback();
               if (id(monitor_enabled) && !id(control_session) && !auth_blocked_ && due(millis(), next_reconnect_)) {
                 next_reconnect_ = millis() + reconnect_delay_;
                 request("READ STATUS");  // Reconnection can only request status, never replay motion.
               }
             }
+            void request_auto_close(int index) {
+              if(index<0 || index>=int(GateSettings::fields()[8].options.size())) return;
+              request_setting('9',GateSettings::fields()[8].options[index]);
+            }
+            void request_setting(char field,const std::string &option) {
+              if(settings_uncertain_) {
+                id(settings_result).publish_state("Not sent: refresh configuration to resolve the previous uncertain save"); return;
+              }
+              if(id(profile_model)!="PS19001" || !GateSettings::option_valid(field,option) || edit_stage_!=EDIT_IDLE ||
+                 !feedback_.confirmed_closed() || !authenticated_ ||
+                 (busy_ && !(background_poll_ && wire_command_=="READ STATUS" && user_command_.empty()))) {
+                id(settings_result).publish_state("Not sent: wait for a confirmed closed gate and idle connection"); return;
+              }
+              desired_field_=field; desired_option_=option; edit_stage_=EDIT_BASELINE; settings_read_retries_=0;
+              id(settings_result).publish_state("Reading fresh configuration before changing setting");
+              request("READ FUNCTION");
+            }
             void request(const std::string &command) {
+              if(edit_stage_!=EDIT_IDLE && command!="READ FUNCTION" && command!="READ STATUS" && command!="STOP" && command!="DISCONNECT") {
+                status("Settings change active; wait for verified readback"); return;
+              }
+              if (command == "READ FUNCTION" && id(profile_model) != "PS19001") {
+                status("Settings read not validated for this controller profile"); return;
+              }
               if (command == "DISCONNECT") {
+                cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after disconnect; refresh settings; not retried" : "Settings cancelled by disconnect; not retried");
                 id(monitor_enabled) = false;
                 feedback_.disconnected(); publish_feedback();
                 user_command_.clear(); urgent_stop_ = false;
@@ -162,19 +425,26 @@ esphome:
               if ((command == "FULL OPEN" || command == "PED OPEN") && id(require_gate_unlock) && id(gate_lock_state).state != "unlocked") {
                 id(control_result).publish_state("Not sent: Home Assistant gate lock is locked or unavailable"); return;
               }
+              if(!id(control_session) && this->parent()->get_gattc_if()==ESP_GATT_IF_NONE) {
+                status("Waiting for Bluetooth GATT registration; no command sent");
+                next_reconnect_=millis()+1000; return;
+              }
               auth_blocked_ = false;
               if (!allowed(command)) { status("Rejected: command is not allowlisted"); return; }
               if (busy_) {
                 if (command == "STOP") {
+                  cancel_settings("Interrupted by Stop; settings outcome may be uncertain; refresh settings");
                   urgent_stop_ = true;
                   status("Stop queued with priority after the active Bluetooth operation");
-                } else if (background_poll_ && wire_command_ == "READ STATUS" &&
+                } else if (((background_poll_ && wire_command_ == "READ STATUS") ||
+                            (wire_command_=="READ FUNCTION" && edit_stage_==EDIT_IDLE)) &&
                            user_command_.empty() && command != "READ STATUS") {
                   user_command_=command;
-                  status("Command queued after the in-flight status read");
+                  status("Command queued after the in-flight read");
                 } else status("Busy; command was not queued or sent");
                 return;
               }
+              if(command=="READ FUNCTION") settings_read_retries_=0;
               background_poll_ = false;
               last_user_request_ = millis();
               user_command_ = command; busy_ = true;
@@ -198,6 +468,13 @@ esphome:
               const uint32_t now = millis();
               feedback_.tick(now); publish_feedback();
               if (phase_ == IDLE_CONNECTED) {
+                if(auto_settings_ && due(now,next_settings_refresh_)) settings_due_=true;
+                if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.confirmed_closed() &&
+                   uint32_t(now-last_poll_)>=500 && id(profile_model)=="PS19001") {
+                  settings_due_=false; settings_read_retries_=0;
+                  next_settings_refresh_=now+300000;
+                  busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
+                }
                 if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
                   status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
                 }
@@ -206,13 +483,21 @@ esphome:
                 }
                 return;
               }
+              if (phase_ == SETTINGS_RETRY_WAIT && due(now,deadline_)) {
+                if(urgent_stop_) next_command();
+                else { wire_command_="READ FUNCTION"; write_command(); }
+                return;
+              }
               if (phase_ == AUTH_READ_WAIT && due(now, deadline_)) { read_auth(false); return; }
+              if (phase_ == QUIET_WAIT && due(now,deadline_)) {
+                if(urgent_stop_) next_command(); else write_command(); return;
+              }
               if (phase_ == AUTH_VERIFY_WAIT && due(now, deadline_)) { read_auth(true); return; }
               if (phase_ == COMMAND_WAIT && due(now, deadline_)) { next_command(); return; }
+              if(phase_==REPLY_WAIT && urgent_stop_ && wire_command_!="STOP") {
+                wire_command_.clear(); next_command(); return;
+              }
               if (phase_ == REPLY_WAIT && due(now, deadline_)) {
-                if (urgent_stop_ && wire_command_ != "STOP") {
-                  wire_command_.clear(); next_command(); return;
-                }
                 phase_ = REPLY_READ; deadline_ = now + 3000;
                 const auto err = esp_ble_gattc_read_char(this->parent()->get_gattc_if(),
                     this->parent()->get_conn_id(), command_handle_, ESP_GATT_AUTH_REQ_NONE);
@@ -226,9 +511,14 @@ esphome:
                                      esp_ble_gattc_cb_param_t *param) override {
               if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
               if (event == ESP_GATTC_CLOSE_EVT) {
+                const bool settings_active=edit_stage_!=EDIT_IDLE;
+                cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after Bluetooth loss; refresh settings; not retried" : "Bluetooth disconnected before settings write; not retried");
+                settings_due_=auto_settings_;
                 ESP_LOGW("gate_link", "Bluetooth closed: reason=%d phase=%d poll_failures=%u",
                          int(param->close.reason), int(phase_), poll_failures_);
                 id(bluetooth_connection).publish_state(false);
+                if(settings_uncertain_) id(settings_result).publish_state("Settings outcome uncertain; refresh to verify; write not retried");
+                else if(!settings_active) id(settings_result).publish_state("Bluetooth disconnected; values retained from last read");
                 const bool uncertain = busy_ && wire_command_ != "READ STATUS" && (phase_ == COMMAND_WRITE || phase_ == REPLY_READ || phase_ == REPLY_WAIT);
                 feedback_.disconnected(); publish_feedback();
                 next_reconnect_ = millis() + reconnect_delay_;
@@ -264,7 +554,19 @@ esphome:
               }
               if (!id(control_session)) return;
               if (event == ESP_GATTC_NOTIFY_EVT && event_handle_ && param->notify.handle == event_handle_) {
-                feedback_.event(millis()); kick_poll(millis()); publish_feedback();
+                const std::string value(reinterpret_cast<const char *>(param->notify.value),
+                                        std::min(size_t(param->notify.value_len),size_t(128)));
+                feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+                // A new event is a reason to leave idle UART-mismatch backoff now.
+                // It only requests status; failed requests still regain bounded backoff.
+                if(phase_==IDLE_CONNECTED) poll_failures_=0;
+                // Refresh the UART request rather than rereading an overwritten buffer.
+                // Never overlap an outstanding GATT write/read or resend a motion command.
+                if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
+                   (phase_==REPLY_WAIT || phase_==REPLY_READ)) {
+                  status_event_refresh_pending_=true;
+                  if(phase_==REPLY_WAIT) refresh_status_after_event();
+                }
                 return;  // Native C004 receiver retains the diagnostic bytes separately.
               }
               if (event == ESP_GATTC_REG_FOR_NOTIFY_EVT && param->reg_for_notify.handle == result_handle_) {
@@ -289,7 +591,13 @@ esphome:
                 } else if (param->write.handle == command_handle_ && phase_ == COMMAND_WRITE) {
                   if (param->write.status != ESP_GATT_OK) { fail("Command write failed; no retry scheduled"); return; }
                   write_confirmed_ = true; read_attempts_ = 0;
-                  phase_ = REPLY_WAIT; deadline_ = millis() + 200;
+                  // This is only an access-mode hint; fresh status still proves movement.
+                  // Preserve it even if another client overwrites the UART acknowledgement.
+                  if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
+                    feedback_.commanded_open(wire_command_=="PED OPEN",millis());
+                  if (movement_command(wire_command_)) motion_ack_deadline_=millis()+2000;
+                  phase_ = REPLY_WAIT;
+                  deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : (movement_command(wire_command_) ? 0 : 200));
                 }
                 return;
               }
@@ -316,6 +624,7 @@ esphome:
                   const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
                   id(status_reply).publish_state(reply.substr(0, 250));
                   if (write_confirmed_ && matching_ack(reply, wire_command_)) {
+                    last_uart_reply_=millis();
                     const auto finished = wire_command_;
                     if (finished == "READ STATUS") {
                       last_poll_ = millis(); poll_interval_ = 1000; poll_failures_ = 0; reconnect_delay_ = 15000;
@@ -324,6 +633,17 @@ esphome:
                       publish_feedback();
                       id(poll_health).publish_state("Status reply received");
                       id(status_successes).publish_state(++status_successes_);
+                    } else if (finished == "READ FUNCTION") {
+                      std::string snapshot;
+                      if (function_reply(reply, snapshot)) {
+                        id(settings_snapshot).publish_state(snapshot);
+                        accept_settings(snapshot);
+                      }
+                    } else if(edit_stage_==EDIT_WRITE && finished==settings_wire_) {
+                      edit_stage_=EDIT_VERIFY; settings_read_retries_=0;
+                      id(settings_result).publish_state("Write acknowledged; verifying full configuration readback");
+                    } else if(finished.rfind("WRITE FUNCTION,",0)==0) {
+                      id(settings_result).publish_state("Write acknowledged after interruption; refresh settings");
                     } else {
                       id(control_result).publish_state("Acknowledged: " + finished);
                       if (finished == "PED OPEN" || finished == "FULL OPEN")
@@ -333,16 +653,38 @@ esphome:
                     }
                     wire_command_.clear();
                     status("Acknowledged: " + finished);
-                    if (urgent_stop_ || !user_command_.empty()) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
+                    if (finished=="READ STATUS" && !user_command_.empty() && !baseline_needed_) {
+                      next_command();  // The read completed; no extra queue delay is needed.
+                    } else if (urgent_stop_ || !user_command_.empty() || edit_stage_==EDIT_WRITE || edit_stage_==EDIT_VERIFY) { phase_ = COMMAND_WAIT; deadline_ = millis() + 50; }
                     else { busy_ = false; phase_ = IDLE_CONNECTED; }
                   } else if (urgent_stop_ && wire_command_ != "STOP") {
                     wire_command_.clear(); phase_ = COMMAND_WAIT; deadline_ = millis() + 50;
-                  } else if (++read_attempts_ < (wire_command_ == "READ STATUS" ? 3u : 10u)) {
-                    if (wire_command_ == "READ STATUS") {
-                      id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
-                      id(unmatched_replies).publish_state(++unmatched_replies_);
-                    }
-                    phase_ = REPLY_WAIT; deadline_ = millis() + 750;
+                  } else if (background_poll_ && wire_command_=="READ STATUS" && !user_command_.empty() &&
+                             authenticated_ && feedback_.available() && !baseline_needed_) {
+                    // A read has completed with an unrelated reply. Do not make a queued
+                    // user wait through background-only rereads; never bypass reconnect
+                    // baseline validation or interrupt an outstanding GATT operation.
+                    wire_command_.clear(); next_command();
+                  } else if(wire_command_=="READ STATUS" && status_event_refresh_pending_ && status_event_refreshes_<1 && status_refreshes_<2) {
+                    refresh_status_after_event();
+                  } else if(wire_command_=="READ STATUS") {
+                    id(unmatched_replies).publish_state(++unmatched_replies_);
+                    // The completed GATT read exposed an unrelated shared UART buffer.
+                    // Ask the board again rather than rereading that same stale content.
+                    // Initial request + two refreshes maximum, shared with event recovery.
+                    if(status_refreshes_<2) {
+                      ++status_refreshes_;
+                      id(poll_health).publish_state("Unrelated status reply; requesting fresh status");
+                      write_command(true);
+                    } else fail("No matching status reply");
+                  } else if (movement_command(wire_command_) && write_confirmed_) {
+                    // Read again as soon as this completed read allows. No fixed pause,
+                    // no concurrent GATT reads, and no movement retransmission.
+                    if (++read_attempts_<12 && !due(millis(),motion_ack_deadline_)) {
+                      phase_=REPLY_WAIT; deadline_=millis();
+                    } else fail("No matching UART acknowledgement; command outcome uncertain; not retried");
+                  } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : 10u)) {
+                    phase_ = REPLY_WAIT; deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 500 : 750);
                   } else fail(wire_command_ == "READ STATUS" ? "No matching status reply" :
                               "No matching UART acknowledgement; command outcome uncertain; not retried");
                 }
@@ -350,10 +692,31 @@ esphome:
             }
           
             static bool allowed(const std::string &c) {
-              return c == "READ STATUS" || c == "FULL OPEN" || c == "FULL CLOSE" ||
+              return c == "READ STATUS" || c == "READ FUNCTION" || c == "FULL OPEN" || c == "FULL CLOSE" ||
                      c == "PED OPEN" || c == "PED CLOSE" || c == "STOP";
             }
+            static bool movement_command(const std::string &command) {
+              return allowed(command) && command!="READ STATUS" && command!="READ FUNCTION";
+            }
             static bool matching_ack(const std::string &reply, const std::string &command) {
+              if(command.rfind("WRITE FUNCTION,",0)==0) {
+                bool matched=false;
+                size_t start=0;
+                while(start<reply.size()) {
+                  const auto end=reply.find_first_of("\r\n",start);
+                  auto line=reply.substr(start,end==std::string::npos?end:end-start);
+                  if(line.rfind("C=",0)==0) line.erase(0,2);
+                  line=line.substr(0,line.find(';'));
+                  if(line=="ACK FUNCTION" || line.rfind("ACK FUNCTION,",0)==0) {
+                    if(line!="ACK FUNCTION" && line!="ACK FUNCTION"+command.substr(14)) return false;
+                    matched=true;
+                  }
+                  if(end==std::string::npos) break;
+                  start=end+1;
+                }
+                return matched;
+              }
+              if (command == "READ FUNCTION") { std::string snapshot; GateSettings settings; return function_reply(reply, snapshot) && settings.decode(snapshot); }
               if (command == "READ STATUS") {
                 GateFeedback::Sample sample; return GateFeedback::parse_reply(reply, sample);
               }
@@ -370,6 +733,28 @@ esphome:
                 start = end + 1;
               }
               return false;
+            }
+            // Capture a complete legacy read response without interpreting or rewriting
+            // its fields. Unknown fields and suffixes are deliberately preserved.
+            static bool function_reply(const std::string &reply, std::string &out) {
+              out.clear();
+              if (reply.size() > 2048) return false;
+              size_t start = 0;
+              while (start < reply.size()) {
+                const auto end = reply.find_first_of("\r\n", start);
+                auto line = reply.substr(start, end == std::string::npos ? end : end-start);
+                if (line.rfind("C=",0)==0) line.erase(0,2);
+                if (line.rfind("ACK READ FUNCTION",0)==0 && line.size()>17 &&
+                    (line[17]==',' || line[17]==':')) {
+                  if (line.size() <= 18 || !std::all_of(line.begin(),line.end(),
+                      [](unsigned char c){return c>=32 && c<=126;})) { out.clear(); return false; }
+                  if (!out.empty() && out != line) { out.clear(); return false; }
+                  out=line;
+                }
+                if (end==std::string::npos) break;
+                start=end+1;
+              }
+              return !out.empty();
             }
             static std::string field(const std::string &value, const std::string &key) {
               size_t start = 0;
@@ -409,9 +794,49 @@ esphome:
            private:
             enum Phase { IDLE, CONNECTING, SUBSCRIBING, AUTH_READ_WAIT, AUTH_READ,
               AUTH_WRITE, AUTH_VERIFY_WAIT, AUTH_VERIFY_READ, COMMAND_WAIT,
-              COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED };
+              COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED, QUIET_WAIT, SETTINGS_RETRY_WAIT };
             Phase phase_{IDLE};
             GateFeedback feedback_;
+            enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
+            EditStage edit_stage_{EDIT_IDLE};
+            char desired_field_{0};
+            std::string desired_option_;
+            unsigned settings_read_retries_{0};
+            bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false}, settings_uncertain_{false};
+            std::string settings_wire_;
+            uint32_t last_uart_reply_{0}, next_settings_refresh_{0};
+            GateSettings edit_baseline_;
+            void cancel_settings(const std::string &message) {
+              if(edit_stage_!=EDIT_IDLE && settings_write_sent_) settings_uncertain_=true;
+              if(edit_stage_!=EDIT_IDLE) id(settings_result).publish_state(message);
+              edit_stage_=EDIT_IDLE; desired_field_=0; desired_option_.clear(); settings_read_retries_=0; settings_wire_.clear(); settings_write_sent_=false;
+            }
+            void accept_settings(const std::string &snapshot) {
+              settings_due_=false; next_settings_refresh_=millis()+300000;
+              GateSettings settings;
+              if(!settings.decode(snapshot)) {
+                cancel_settings("Invalid settings snapshot; no further write scheduled");
+                id(settings_result).publish_state("Unrecognized settings values; configuration entities not updated"); return;
+              }
+              settings_uncertain_=false; // A complete fresh read establishes actual values.
+              // During a write, publish the selector only after verified readback.
+              if(edit_stage_!=EDIT_BASELINE) settings.publish();
+              if(edit_stage_==EDIT_BASELINE) {
+                if(settings.value_for(desired_field_)==desired_option_) {
+                  settings.publish(); cancel_settings("Already set; no write needed"); return;
+                }
+                edit_baseline_=settings;
+                settings_wire_=settings.change_command(desired_field_,desired_option_);
+                if(settings_wire_.empty() || !feedback_.confirmed_closed()) {
+                  settings.publish(); cancel_settings("Not sent: incompatible option, dependent current threshold, unknown extension or gate no longer confirmed closed"); return;
+                }
+                edit_stage_=EDIT_WRITE; settings_read_retries_=0;
+              } else if(edit_stage_==EDIT_VERIFY) {
+                const bool matches=settings.matches_command(settings_wire_) && settings.same_metadata(edit_baseline_);
+                cancel_settings(matches ? "Setting saved and complete readback verified" : "Readback mismatch; actual values shown; not retried");
+                settings_uncertain_=false;
+              } else id(settings_result).publish_state("Configuration read and validated");
+            }
             bool auth_blocked_{false};
             uint16_t event_handle_{0};
             uint32_t next_reconnect_{0}, reconnect_delay_{15000};
@@ -432,6 +857,10 @@ esphome:
               }
             }
             void publish_feedback() {
+              const float position=feedback_.position();
+              if (position >= 0) {
+                if (id(gate_position).state != position) id(gate_position).publish_state(position);
+              } else if (!std::isnan(id(gate_position).state)) id(gate_position).publish_state(NAN);
               publish_cover(id(car_gate_cover), feedback_.car());
               publish_cover(id(pedestrian_gate_cover), feedback_.pedestrian());
               if (feedback_.gate() == "unavailable") id(gate_state).invalidate_state();
@@ -443,27 +872,70 @@ esphome:
             bool authenticated_{false}, busy_{false}, urgent_stop_{false};
             bool baseline_needed_{false}, write_confirmed_{false}, background_poll_{false};
             uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
-            uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0};
+            uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
             unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
+            unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};
+            void refresh_status_after_event() {
+              status_event_refresh_pending_=false; ++status_event_refreshes_; ++status_refreshes_;
+              ESP_LOGD("gate_protocol", "Notification requested a fresh status transaction; read only");
+              write_command(true);
+            }
             uint32_t poll_interval_{1000}, fast_until_{0};
             bool fast_window_{false}, status_due_{false};
             void kick_poll(uint32_t now) { fast_window_=true; fast_until_=now+30000; status_due_=true; }
             uint32_t poll_delay(uint32_t now) {
               if (poll_failures_) return poll_interval_;
               if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-              return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 500 : 1000;
+              return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 150 : 1000;
             }
             std::string status_text_;
             std::string user_command_, wire_command_, challenge_;
             static bool due(uint32_t now, uint32_t target) { return int32_t(now - target) >= 0; }
             void status(const std::string &message) { status_text_ = message; id(command_status).publish_state(message); }
             void fail(const std::string &message) {
+              const bool reply_mismatch=phase_==REPLY_READ &&
+                message=="No matching UART acknowledgement; command outcome uncertain; not retried";
+              if(reply_mismatch && write_confirmed_ && authenticated_ && movement_command(wire_command_)) {
+                id(control_result).publish_state("Acknowledgement missing for " + wire_command_ + "; reading status; command not retried");
+                status("Movement acknowledgement uncertain; recovering with status only");
+                wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+                kick_poll(millis()); publish_feedback(); return;
+              }
+              if(reply_mismatch && settings_write_sent_ && edit_stage_==EDIT_WRITE && wire_command_==settings_wire_) {
+                settings_uncertain_=true; edit_stage_=EDIT_VERIFY; settings_read_retries_=0;
+                id(settings_result).publish_state("Write acknowledgement lost; checking actual configuration; write not retried");
+                wire_command_="READ FUNCTION"; phase_=SETTINGS_RETRY_WAIT; deadline_=millis()+500;
+                return;
+              }
+              if(wire_command_=="READ FUNCTION" && reply_mismatch) {
+                if(settings_read_retries_<2 && !urgent_stop_) {
+                  ++settings_read_retries_;
+                  ESP_LOGD("gate_settings", "Configuration reply interrupted; read-only retry %u/2", settings_read_retries_);
+                  if(settings_write_sent_)
+                    id(settings_result).publish_state("Readback interrupted; retrying read only; write not retried");
+                  else if(edit_stage_!=EDIT_IDLE || settings_read_retries_>=2)
+                    id(settings_result).publish_state("Waiting for configuration; retrying read only");
+                  // Different delays avoid repeatedly colliding with a periodic cloud
+                  // client. Three sends maximum, five GATT reads per send.
+                  phase_=SETTINGS_RETRY_WAIT;
+                  deadline_=millis()+400*settings_read_retries_+millis()%211;
+                  return;
+                }
+                const bool submitted=settings_write_sent_;
+                cancel_settings(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; no configuration write sent");
+                id(settings_result).publish_state(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; refresh settings to try again");
+                settings_due_=false; next_settings_refresh_=millis()+30000;
+                wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+                if(urgent_stop_ || !user_command_.empty()) { busy_=true; phase_=COMMAND_WAIT; deadline_=millis()+50; }
+                return;
+              }
+              cancel_settings(settings_write_sent_ ? "Settings outcome uncertain; refresh settings; not retried" : "Settings change failed before write; not retried");
               if (message.find("Authentication was not confirmed") != std::string::npos ||
                   message.find("result 14") != std::string::npos || message.find("result 19") != std::string::npos)
                 auth_blocked_ = true;  // No unattended repeated PIN attempts after rejection.
               // An unrelated UART response on a successful GATT read is not link loss.
               // Cloud/app traffic can overwrite the shared UART result characteristic.
-              if (background_poll_ && wire_command_ == "READ STATUS" && authenticated_ &&
+              if ((background_poll_ || user_command_.empty()) && wire_command_ == "READ STATUS" && authenticated_ &&
                   phase_ == REPLY_READ && (message == "No matching status reply" ||
                     (urgent_stop_ && message == "Bluetooth operation timed out; command not retried"))) {
                 ++poll_failures_; last_poll_ = millis();
@@ -491,6 +963,9 @@ esphome:
               status(message); busy_ = false; user_command_.clear(); urgent_stop_ = false;
               feedback_.disconnected(); publish_feedback();
               phase_ = IDLE; this->parent()->disconnect();
+              // A rejected early connect may never emit CLOSE_EVT. Release only our
+              // session here; the SDK still guards its own connecting/disconnecting link.
+              authenticated_=false; id(control_session)=false;
             }
             esp_err_t write(uint16_t handle, const std::string &value) {
               return esp_ble_gattc_write_char(this->parent()->get_gattc_if(), this->parent()->get_conn_id(),
@@ -504,11 +979,17 @@ esphome:
             }
             void next_command() {
               if (!authenticated_) { fail("Authentication required; no command sent"); return; }
-              if (urgent_stop_) { wire_command_ = "STOP"; urgent_stop_ = false; user_command_.clear(); }
+              if (urgent_stop_) { cancel_settings("Interrupted by Stop; refresh settings"); wire_command_ = "STOP"; urgent_stop_ = false; user_command_.clear(); }
+              else if(edit_stage_==EDIT_WRITE) {
+                if(!feedback_.confirmed_closed() || settings_wire_.empty()) {
+                  cancel_settings("Not sent: gate no longer confirmed closed"); busy_=false; phase_=IDLE_CONNECTED; return;
+                }
+                wire_command_=settings_wire_;
+              } else if(edit_stage_==EDIT_VERIFY) wire_command_="READ FUNCTION";
               else if (baseline_needed_ && user_command_ != "READ STATUS") {
                 wire_command_ = "READ STATUS"; baseline_needed_ = false;
               } else { wire_command_ = user_command_; user_command_.clear(); }
-              if (!allowed(wire_command_)) { fail("Invalid command; nothing sent"); return; }
+              if (!allowed(wire_command_) && !(edit_stage_==EDIT_WRITE && wire_command_==settings_wire_)) { fail("Invalid command; nothing sent"); return; }
               if ((wire_command_ == "PED OPEN" || wire_command_ == "FULL OPEN") &&
                   id(require_gate_unlock) && id(gate_lock_state).state != "unlocked") {
                 id(control_result).publish_state("Not sent: gate lock changed while command was queued");
@@ -516,7 +997,19 @@ esphome:
               }
               write_command();
             }
-            void write_command() {
+            void write_command(bool event_refresh=false) {
+              if(!event_refresh) { status_event_refreshes_=status_refreshes_=0; status_event_refresh_pending_=false; }
+              if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
+                phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;
+              }
+              if(wire_command_.rfind("WRITE FUNCTION",0)==0) {
+                if(edit_stage_!=EDIT_WRITE || settings_write_sent_ || wire_command_!=settings_wire_ ||
+                   !feedback_.confirmed_closed()) {
+                  fail("Settings write rejected by transaction guard"); return;
+                }
+                settings_write_sent_=true;
+                id(settings_result).publish_state("Saving setting; waiting for acknowledgement");
+              }
               phase_ = COMMAND_WRITE; deadline_ = millis() + 4000; write_confirmed_ = false;
               status("Sending: " + wire_command_);
               if (wire_command_ == "READ STATUS") { status_due_=false; id(poll_health).publish_state("Requesting status"); }
@@ -529,8 +1022,15 @@ esphome:
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
+          id(gate_settings_change) = [client](char field, const std::string &option) { client->request_setting(field, option); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
-      - script.execute: gate_scan
+      - wait_until:
+          condition: ble.enabled
+          timeout: 30s
+      - lambda: |-
+          id(monitor_enabled) = true;
+          ESP_LOGI("gate_link", "Starting continuous monitoring with status only");
+          if (id(gate_request)) id(gate_request)("READ STATUS");
 
 esp32:
   board: m5stack-atom
@@ -558,6 +1058,9 @@ wifi:
   password: !secret wifi_password
 
 globals:
+  - id: gate_settings_change
+    type: std::function<void(char, const std::string &)>
+    restore_value: false
   - id: require_gate_unlock
     type: bool
     restore_value: false
@@ -586,6 +1089,14 @@ globals:
     type: int
     restore_value: false
     initial_value: '${profile_closed_tolerance}'
+  - id: profile_single_closed_after_tracked_closing
+    type: bool
+    restore_value: false
+    initial_value: '${profile_single_closed_after_tracked_closing}'
+  - id: profile_opening_event_mode_hint
+    type: bool
+    restore_value: false
+    initial_value: '${profile_opening_event_mode_hint}'
   - id: profile_supports_pedestrian
     type: bool
     restore_value: false
@@ -618,8 +1129,8 @@ globals:
     restore_value: false
   - id: monitor_enabled
     type: bool
-    restore_value: true
-    initial_value: 'false'
+    restore_value: false
+    initial_value: 'true'
   - id: gate_maintenance
     type: std::function<void()>
     restore_value: false
@@ -629,22 +1140,361 @@ interval:
     then:
       - lambda: if (id(gate_maintenance)) id(gate_maintenance)();
 
-switch:
+select:
   - platform: template
-    name: Bluetooth monitoring
-    id: monitor_switch
+    id: setting_1
+    name: "Motor type"
     entity_category: config
-    lambda: return id(monitor_enabled);
-    turn_on_action:
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Overcurrent"
+      - "Limit Switch"
+      - "Hall Sensor"
+    set_action:
       - lambda: |-
-          id(monitor_enabled) = true;
-          if (!id(control_session) && id(gate_request)) id(gate_request)("READ STATUS");
-    turn_off_action:
+          if (id(gate_settings_change)) id(gate_settings_change)('1', x);
+  - platform: template
+    id: setting_2
+    name: "Overcurrent when opening"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "2 A"
+      - "3 A"
+      - "4 A"
+      - "5 A"
+      - "0.5 A"
+      - "0.6 A"
+      - "0.7 A"
+      - "0.8 A"
+      - "0.9 A"
+      - "1 A"
+      - "1.1 A"
+      - "1.2 A"
+      - "1.3 A"
+      - "1.4 A"
+      - "1.5 A"
+      - "1.6 A"
+      - "1.7 A"
+      - "1.8 A"
+      - "1.9 A"
+      - "2.1 A"
+      - "2.2 A"
+      - "2.3 A"
+      - "2.4 A"
+      - "2.5 A"
+      - "2.6 A"
+      - "2.7 A"
+      - "2.8 A"
+      - "2.9 A"
+      - "3.1 A"
+      - "3.2 A"
+      - "3.3 A"
+      - "3.4 A"
+      - "3.5 A"
+      - "3.6 A"
+      - "3.7 A"
+      - "3.8 A"
+      - "3.9 A"
+    set_action:
       - lambda: |-
-          id(monitor_enabled) = false;
-          if (id(gate_request)) id(gate_request)("DISCONNECT");
+          if (id(gate_settings_change)) id(gate_settings_change)('2', x);
+  - platform: template
+    id: setting_3
+    name: "Overcurrent when closing"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "2 A"
+      - "3 A"
+      - "4 A"
+      - "5 A"
+      - "0.5 A"
+      - "0.6 A"
+      - "0.7 A"
+      - "0.8 A"
+      - "0.9 A"
+      - "1 A"
+      - "1.1 A"
+      - "1.2 A"
+      - "1.3 A"
+      - "1.4 A"
+      - "1.5 A"
+      - "1.6 A"
+      - "1.7 A"
+      - "1.8 A"
+      - "1.9 A"
+      - "2.1 A"
+      - "2.2 A"
+      - "2.3 A"
+      - "2.4 A"
+      - "2.5 A"
+      - "2.6 A"
+      - "2.7 A"
+      - "2.8 A"
+      - "2.9 A"
+      - "3.1 A"
+      - "3.2 A"
+      - "3.3 A"
+      - "3.4 A"
+      - "3.5 A"
+      - "3.6 A"
+      - "3.7 A"
+      - "3.8 A"
+      - "3.9 A"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('3', x);
+  - platform: template
+    id: setting_4
+    name: "Motor speed when opening"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "40 %"
+      - "50 %"
+      - "75 %"
+      - "100 %"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('4', x);
+  - platform: template
+    id: setting_5
+    name: "Motor speed when closing"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "40 %"
+      - "50 %"
+      - "75 %"
+      - "100 %"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('5', x);
+  - platform: template
+    id: setting_6
+    name: "Deceleration speed"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "40 %"
+      - "50 %"
+      - "60 %"
+      - "70 %"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('6', x);
+  - platform: template
+    id: setting_7
+    name: "Time gap b/w dual gates (opening)"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "0 sec"
+      - "2 sec"
+      - "5 sec"
+      - "10 sec"
+      - "15 sec"
+      - "20 sec"
+      - "25 sec"
+      - "35 sec"
+      - "45 sec"
+      - "55 sec"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('7', x);
+  - platform: template
+    id: setting_8
+    name: "Time gap b/w dual gates (closing)"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "0 sec"
+      - "2 sec"
+      - "5 sec"
+      - "10 sec"
+      - "15 sec"
+      - "20 sec"
+      - "25 sec"
+      - "35 sec"
+      - "45 sec"
+      - "55 sec"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('8', x);
+  - platform: template
+    id: setting_9
+    name: "Auto-closing"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "3 sec"
+      - "10 sec"
+      - "20 sec"
+      - "40 sec"
+      - "60 sec"
+      - "120 sec"
+      - "180 sec"
+      - "300 sec"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('9', x);
+  - platform: template
+    id: setting_a
+    name: "Safety Device Function Mode"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Mode 1"
+      - "Mode 2"
+      - "Mode 3"
+      - "Mode 4"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('A', x);
+  - platform: template
+    id: setting_b
+    name: "Pedestrian mode"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "Function ON"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('B', x);
+  - platform: template
+    id: setting_c
+    name: "Flashing light"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Blinks whenstarts moving"
+      - "Blinks 3 seconds before starts moving"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('C', x);
+  - platform: template
+    id: setting_d
+    name: "Photocell activation"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "Function ON"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('D', x);
+  - platform: template
+    id: setting_e
+    name: "Photocell 2 activation"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "Function ON"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('E', x);
+  - platform: template
+    id: setting_f
+    name: "Alarm Buzzer"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "Function ON"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('F', x);
+  - platform: template
+    id: setting_g
+    name: "Electric latch mode"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Standard Gate Opening"
+      - "Release Gate Tension before Opening (Gate Reversing for 0.25s)"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('G', x);
+  - platform: template
+    id: setting_h
+    name: "LED direction"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "When Terminal Block is at Top"
+      - "When Terminal Block is at Bottom"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('H', x);
+  - platform: template
+    id: setting_i
+    name: "Dual / Single gate"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Single Gate"
+      - "Dual Gate"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('I', x);
+  - platform: template
+    id: setting_j
+    name: "Over current reverses duration when closing"
+    entity_category: config
+    lambda: return {};
+    update_interval: never
+    options:
+      - "Function OFF"
+      - "0.1 sec"
+      - "0.2 sec"
+      - "0.3 sec"
+      - "0.4 sec"
+      - "0.5 sec"
+      - "0.6 sec"
+    set_action:
+      - lambda: |-
+          if (id(gate_settings_change)) id(gate_settings_change)('J', x);
+
 
 text_sensor:
+
+  - platform: template
+    id: settings_result
+    name: Settings update result
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    id: settings_snapshot
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - lambda: |-
+            const size_t count = (x.size()+95)/96;
+            for (size_t i=0;i<count;++i)
+              ESP_LOGD("gate_settings", "Snapshot %u/%u: %s", unsigned(i+1), unsigned(count), x.substr(i*96,96).c_str());
   - platform: template
     name: Bluetooth gate state source
     id: gate_state_source
@@ -813,6 +1663,15 @@ text_sensor:
                      unsigned(id(c004_count)), unsigned(x.size()), hex.c_str());
 
 sensor:
+  - platform: template
+    name: Gate position
+    id: gate_position
+    update_interval: never
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    icon: mdi:gate
+    entity_category: diagnostic
+
   - platform: template
     name: Bluetooth status replies
     internal: true

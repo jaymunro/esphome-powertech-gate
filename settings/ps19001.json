@@ -1,0 +1,284 @@
+{
+  "model": "PS19001",
+  "protocol": "legacy_uart_v1",
+  "fields": [
+    {
+      "field": "1",
+      "name": "Motor type",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "Overcurrent",
+        "Limit Switch",
+        "Hall Sensor"
+      ]
+    },
+    {
+      "field": "2",
+      "name": "Overcurrent when opening",
+      "offset": 1,
+      "format": "decimal_width_2",
+      "options": [
+        "2 A",
+        "3 A",
+        "4 A",
+        "5 A"
+      ]
+    },
+    {
+      "field": "3",
+      "name": "Overcurrent when closing",
+      "offset": 1,
+      "format": "decimal_width_2",
+      "options": [
+        "2 A",
+        "3 A",
+        "4 A",
+        "5 A"
+      ]
+    },
+    {
+      "field": "4",
+      "name": "Motor speed when opening",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "40 %",
+        "50 %",
+        "75 %",
+        "100 %"
+      ]
+    },
+    {
+      "field": "5",
+      "name": "Motor speed when closing",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "40 %",
+        "50 %",
+        "75 %",
+        "100 %"
+      ]
+    },
+    {
+      "field": "6",
+      "name": "Deceleration speed",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "40 %",
+        "50 %",
+        "60 %",
+        "70 %"
+      ]
+    },
+    {
+      "field": "7",
+      "name": "Time gap b/w dual gates (opening)",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "0 sec",
+        "2 sec",
+        "5 sec",
+        "10 sec",
+        "15 sec",
+        "20 sec",
+        "25 sec",
+        "35 sec",
+        "45 sec",
+        "55 sec"
+      ]
+    },
+    {
+      "field": "8",
+      "name": "Time gap b/w dual gates (closing)",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "0 sec",
+        "2 sec",
+        "5 sec",
+        "10 sec",
+        "15 sec",
+        "20 sec",
+        "25 sec",
+        "35 sec",
+        "45 sec",
+        "55 sec"
+      ]
+    },
+    {
+      "field": "9",
+      "name": "Auto-closing",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "3 sec",
+        "10 sec",
+        "20 sec",
+        "40 sec",
+        "60 sec",
+        "120 sec",
+        "180 sec",
+        "300 sec"
+      ]
+    },
+    {
+      "field": "A",
+      "name": "Safety Device Function Mode",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "Mode 1",
+        "Mode 2",
+        "Mode 3",
+        "Mode 4"
+      ]
+    },
+    {
+      "field": "B",
+      "name": "Pedestrian mode",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "Function ON"
+      ]
+    },
+    {
+      "field": "C",
+      "name": "Flashing light",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Blinks whenstarts moving",
+        "Blinks 3 seconds before starts moving"
+      ]
+    },
+    {
+      "field": "D",
+      "name": "Photocell activation",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "Function ON"
+      ]
+    },
+    {
+      "field": "E",
+      "name": "Photocell 2 activation",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "Function ON"
+      ]
+    },
+    {
+      "field": "F",
+      "name": "Alarm Buzzer",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "Function ON"
+      ]
+    },
+    {
+      "field": "G",
+      "name": "Electric latch mode",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Standard Gate Opening",
+        "Release Gate Tension before Opening (Gate Reversing for 0.25s)"
+      ]
+    },
+    {
+      "field": "H",
+      "name": "LED direction",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "When Terminal Block is at Top",
+        "When Terminal Block is at Bottom"
+      ]
+    },
+    {
+      "field": "I",
+      "name": "Dual / Single gate",
+      "offset": 1,
+      "format": "hex_width_1",
+      "options": [
+        "Single Gate",
+        "Dual Gate"
+      ]
+    },
+    {
+      "field": "J",
+      "name": "Over current reverses duration when closing",
+      "offset": 0,
+      "format": "hex_width_1",
+      "options": [
+        "Function OFF",
+        "0.1 sec",
+        "0.2 sec",
+        "0.3 sec",
+        "0.4 sec",
+        "0.5 sec",
+        "0.6 sec"
+      ]
+    }
+  ],
+  "note": "All 19 parameters support guarded edits; motor-type transitions preserve both current thresholds or are rejected.",
+  "hall_current": {
+    "fields": [
+      "2",
+      "3"
+    ],
+    "offset": 5,
+    "format": "decimal_width_2",
+    "options": [
+      "0.5 A",
+      "0.6 A",
+      "0.7 A",
+      "0.8 A",
+      "0.9 A",
+      "1 A",
+      "1.1 A",
+      "1.2 A",
+      "1.3 A",
+      "1.4 A",
+      "1.5 A",
+      "1.6 A",
+      "1.7 A",
+      "1.8 A",
+      "1.9 A",
+      "2 A",
+      "2.1 A",
+      "2.2 A",
+      "2.3 A",
+      "2.4 A",
+      "2.5 A",
+      "2.6 A",
+      "2.7 A",
+      "2.8 A",
+      "2.9 A",
+      "3 A",
+      "3.1 A",
+      "3.2 A",
+      "3.3 A",
+      "3.4 A",
+      "3.5 A",
+      "3.6 A",
+      "3.7 A",
+      "3.8 A",
+      "3.9 A",
+      "4 A"
+    ]
+  }
+}

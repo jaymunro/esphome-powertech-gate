@@ -11,12 +11,13 @@ esphome:
   includes:
     - <esphome/components/md5/md5.h>
     - <esphome/core/alloc_helpers.h>
+    - <cmath>
   name: ${device_name}
   friendly_name: ${friendly_name}
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.8.6"
+    version: "0.9.0-alpha.12"
   on_boot:
     priority: -100
     then:
@@ -26,8 +27,15 @@ esphome:
           auto *client = new EyeOpenClient();
           id(gate_ble).register_ble_node(client);
           id(gate_request) = [client](const std::string &command) { client->request(command); };
+          id(gate_settings_change) = [client](char field, const std::string &option) { client->request_setting(field, option); };
           id(gate_maintenance) = [client]() { client->maintenance(); };
-      - script.execute: gate_scan
+      - wait_until:
+          condition: ble.enabled
+          timeout: 30s
+      - lambda: |-
+          id(monitor_enabled) = true;
+          ESP_LOGI("gate_link", "Starting continuous monitoring with status only");
+          if (id(gate_request)) id(gate_request)("READ STATUS");
 
 esp32:
   board: m5stack-atom
@@ -55,6 +63,9 @@ wifi:
   password: !secret wifi_password
 
 globals:
+  - id: gate_settings_change
+    type: std::function<void(char, const std::string &)>
+    restore_value: false
   - id: require_gate_unlock
     type: bool
     restore_value: false
@@ -83,6 +94,14 @@ globals:
     type: int
     restore_value: false
     initial_value: '${profile_closed_tolerance}'
+  - id: profile_single_closed_after_tracked_closing
+    type: bool
+    restore_value: false
+    initial_value: '${profile_single_closed_after_tracked_closing}'
+  - id: profile_opening_event_mode_hint
+    type: bool
+    restore_value: false
+    initial_value: '${profile_opening_event_mode_hint}'
   - id: profile_supports_pedestrian
     type: bool
     restore_value: false
@@ -115,8 +134,8 @@ globals:
     restore_value: false
   - id: monitor_enabled
     type: bool
-    restore_value: true
-    initial_value: 'false'
+    restore_value: false
+    initial_value: 'true'
   - id: gate_maintenance
     type: std::function<void()>
     restore_value: false
@@ -126,22 +145,25 @@ interval:
     then:
       - lambda: if (id(gate_maintenance)) id(gate_maintenance)();
 
-switch:
-  - platform: template
-    name: Bluetooth monitoring
-    id: monitor_switch
-    entity_category: config
-    lambda: return id(monitor_enabled);
-    turn_on_action:
-      - lambda: |-
-          id(monitor_enabled) = true;
-          if (!id(control_session) && id(gate_request)) id(gate_request)("READ STATUS");
-    turn_off_action:
-      - lambda: |-
-          id(monitor_enabled) = false;
-          if (id(gate_request)) id(gate_request)("DISCONNECT");
+@@SETTINGS_SELECT@@
 
 text_sensor:
+@@SETTINGS_TEXT_SENSORS@@
+  - platform: template
+    id: settings_result
+    name: Settings update result
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    id: settings_snapshot
+    internal: true
+    update_interval: never
+    on_value:
+      then:
+        - lambda: |-
+            const size_t count = (x.size()+95)/96;
+            for (size_t i=0;i<count;++i)
+              ESP_LOGD("gate_settings", "Snapshot %u/%u: %s", unsigned(i+1), unsigned(count), x.substr(i*96,96).c_str());
   - platform: template
     name: Bluetooth gate state source
     id: gate_state_source
@@ -310,6 +332,15 @@ text_sensor:
                      unsigned(id(c004_count)), unsigned(x.size()), hex.c_str());
 
 sensor:
+  - platform: template
+    name: Gate position
+    id: gate_position
+    update_interval: never
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    icon: mdi:gate
+    entity_category: diagnostic
+
   - platform: template
     name: Bluetooth status replies
     internal: true

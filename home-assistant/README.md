@@ -7,8 +7,13 @@ movement buttons are internal and are not advertised to Home Assistant.
 - **Car gate** and **Pedestrian gate** are mutually exclusive access modes,
   not leaf-position sensors. Pedestrian open means car closed, and vice versa.
 - **Gate state** uses the Opening binary-sensor class: `on` = Open, `off` =
-  Closed. Missing/unconfirmed/stale Bluetooth feedback gives **Unknown**;
+  Closed. Missing, startup-unconfirmed or stale Bluetooth feedback gives **Unknown**;
   losing the ESP32 connection gives **Unavailable**. No reed switch is used.
+- **Gate position** is an enabled diagnostic percentage from the latest valid
+  controller status reply, not an independent leaf-angle measurement. It becomes
+  Unknown after Bluetooth disconnect or 25 seconds without a valid status reply.
+  Values up to 5 count as Closed only alongside explicit CLOSED and repeated
+  fresh confirmation; Closing at those positions still counts as open.
 - **Bluetooth connection** uses the Connectivity class and shows the actual
   GATT link, Connected/Disconnected. Connected does not imply authenticated,
   synchronized or fresh feedback. Consult Gate state for that.
@@ -57,3 +62,7 @@ Gate state changed failure semantics from helper Unavailable to native Unknown.
 Update any automation that checks only for Unavailable to reject Unknown too.
 Keep experimental entities out of voice assistants until physical control and
 recovery testing is complete. Explicit close and Stop still need hardware tests.
+
+## Configuration
+
+The settings branch publishes all 19 board parameters as editable selects under Configuration. Monitoring starts automatically; there is no monitoring switch or refresh button. Settings refresh after connection, after saves, every five minutes while Closed, and 30 seconds after failed reads. Settings update result is Diagnostic. The 18 previous read-only sensor entities are replaced by selects with the same names; update any consumers from `sensor.*` to `select.*`. Auto-closing keeps its existing select ID. Settings are published only from validated reads, and selecting the current value sends no board write. Every change requires fresh Closed feedback. Read-only recovery retries overwritten replies with bounded backoff, including verification after a lost write acknowledgement; writes are never automatically retried. An unresolved save blocks further edits until a fresh configuration read. Existing cover entity IDs and security consumers are unchanged. See the main README for motor-type/current dependencies and remaining validation limits.
