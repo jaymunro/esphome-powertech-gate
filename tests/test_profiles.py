@@ -21,6 +21,9 @@ class Profiles(unittest.TestCase):
  def test_rejects_nonboolean_event_hint(self):
   self.p['opening_event_mode_hint']='true'
   with self.assertRaises(ValueError): module.validate(self.p)
+ def test_rejects_nonboolean_tracked_close(self):
+  self.p['single_closed_after_tracked_closing']='true'
+  with self.assertRaises(ValueError): module.validate(self.p)
  def test_rejects_excessive_closed_tolerance(self):
   self.p['closed_position_tolerance']=6
   with self.assertRaises(ValueError): module.validate(self.p)

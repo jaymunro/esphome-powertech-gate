@@ -5,5 +5,6 @@ substitutions:
   profile_full_open_min: "95"
   profile_closed_position: "0"
   profile_closed_tolerance: "5"
+  profile_single_closed_after_tracked_closing: "true"
   profile_opening_event_mode_hint: "true"
   profile_supports_pedestrian: "true"

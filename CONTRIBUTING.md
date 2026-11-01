@@ -20,6 +20,10 @@ protocol. Similar gate hardware or a shared app name is not proof of compatibili
    labels have been corroborated against wired and transmitter movements on the
    documented firmware. This enables a guarded hint, never notification-only
    physical state. Test reconnect replay and contradictory event/status evidence.
+   Set `single_closed_after_tracked_closing` to false unless validated. Opting in
+   accepts one explicit in-tolerance CLOSED only after recent progressing closing
+   reads reach the closed range. Resynchronization and ambiguous motion retain
+   two-sample confirmation; test reversal, Stop, stale tracking and bad endpoints.
 6. Run generation, host tests and an ESPHome example compile. Open a PR with
    the model/firmware, a concise test matrix and remaining limitations.
 

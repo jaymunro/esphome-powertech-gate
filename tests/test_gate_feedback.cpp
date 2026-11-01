@@ -228,5 +228,49 @@ int main() {
  auto expired_baseline=closed_events();expired_baseline.event(44001,"Opening");
  expired_baseline.accept({"PED OPENING",14},44500);expired_baseline.accept({"PED OPENING",24},45100);
  assert(expired_baseline.car()=="unavailable" && expired_baseline.pedestrian()=="unavailable");
- puts("Feedback tests passed: parsing, replay quarantine, two samples, exclusive modes, stale/disconnect, reconnect and guarded C004 hints.");
+ // Replay the late mode event from the 13:23 car cycle without discarding
+ // its first fresh Opening sample. Notification itself still publishes nothing.
+ GateFeedback late({"PS19001","SINGLE STOPPED",95,0,true,5,true,true});late.connected(0);
+ late.accept({"PED CLOSED",1},16000);late.accept({"PED CLOSED",1},28673);
+ late.accept({"PED OPENING",5},30296);late.event(31021,"Opening;src=fixture");
+ assert(late.gate()=="closed" && !late.confirmed_closed());
+ assert(late.accept({"PED OPENING",23},31669));assert(late.car()=="opening");
+ late.accept({"PED OPENED",100},39115);late.event(39930,"Opened");
+ late.accept({"PED OPENED",100},40476);late.accept({"PED OPENED",100},41257);
+ for(auto row : {std::pair<uint32_t,int>{48940,96},{49548,88},{50270,79},{51088,69},
+                {51903,59},{52721,48},{53553,37},{54271,26},{55078,19},{56013,12},{56819,3},{57660,0}})
+  late.accept({"PED CLOSING",row.second},row.first);
+ late.event(57846,"PedClosed");assert(!late.confirmed_closed());
+ assert(late.accept({"PED CLOSED",1},58159));assert(late.confirmed_closed());
+ // Pedestrian closing uses the same physical endpoint policy, independently of mode.
+ GateFeedback fastped({"PS19001","SINGLE STOPPED",95,0,true,5,true,true});fastped.connected(0);
+ fastped.accept({"SINGLE STOPPED",26},16000);fastped.accept({"SINGLE STOPPED",26},18000);
+ fastped.accept({"PED CLOSING",10},20000);fastped.accept({"PED CLOSING",3},20600);
+ assert(fastped.accept({"PED CLOSED",1},21000));assert(fastped.confirmed_closed());
+ // Lack of progress, mid-travel, old tracking, reversal, Stop, a new opening
+ // event, invalid CLOSED and reconnect must all fall back to two Closed reads.
+ for(int scenario=0;scenario<8;++scenario) {
+  GateFeedback g({"PS19001","SINGLE STOPPED",95,0,true,5,true,true});g.connected(0);
+  assert(!g.accept({"PED CLOSED",1},16000));assert(g.accept({"PED CLOSED",1},18000));
+  g.accept({"PED OPENED",100},19000);g.accept({"PED OPENED",100},19600);
+  g.accept({"PED CLOSING",scenario==0 ? 3 : 10},20000);
+  g.accept({"PED CLOSING",scenario==1 ? 8 : 3},20600);
+  if(scenario==3)g.accept({"PED CLOSING",4},20700);
+  if(scenario==4)g.accept({"PED STOPPED",3},20700);
+  if(scenario==5)g.event(20700,"Opening");
+  if(scenario==6)g.accept({"PED CLOSED",6},20700);
+  if(scenario==7){g.disconnected();g.connected(21000);}
+  const uint32_t at=scenario==2 ? 27000 : (scenario==7 ? 38000 : 21000);
+  assert(!g.accept({"PED CLOSED",1},at));assert(!g.confirmed_closed());
+  assert(g.accept({"PED CLOSED",1},at+1100));assert(g.confirmed_closed());
+ }
+ // Old candidate/plateau/conflicting mode events cannot borrow confirmation.
+ for(int scenario=0;scenario<3;++scenario) {
+  auto g=closed_events();g.accept({"PED OPENING",5},19000);
+  const uint32_t event_at=scenario==0 ? 21000 : 19500;
+  g.event(event_at,"Opening");if(scenario==2)g.event(event_at+1,"PedOpening");
+  assert(!g.accept({"PED OPENING",scenario==1 ? 5 : 10},event_at+600));
+  assert(g.car()!="opening" && g.pedestrian()!="opening");
+ }
+ puts("Feedback tests passed: late mode corroboration, tracked closing, conservative recovery and existing replay/freshness guards.");
 }

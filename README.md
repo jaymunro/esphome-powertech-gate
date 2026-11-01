@@ -35,7 +35,9 @@ still display movement after a lost connection until fresh feedback returns;
 they do not independently become unavailable on a Bluetooth failure. Before
 using a cover in an automation, require Gate state to be `on` or `off`.
 PS19001 permits a five-unit closed-position tolerance only with an explicit
-CLOSED status and repeated fresh confirmation. CLOSED outside that tolerance makes
+CLOSED status. After tracked closing reaches that range, PS19001 accepts one
+explicit CLOSED reply; otherwise it requires repeated fresh confirmation.
+CLOSED outside that tolerance makes
 Gate state Unknown rather than falsely refreshing Open. Gate position is the raw
 controller percentage, not an independently measured leaf angle; it becomes
 Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
@@ -107,6 +109,9 @@ reply content, the bridge can submit a fresh READ STATUS after the outstanding
 GATT operation completes. A new event also leaves idle mismatch backoff promptly. This refresh shares the transaction budget and never repeats a movement command.
 Compatible endpoint notifications preserve a pending fresh confirmation rather
 than restarting its timer; stable Closed still requires fresh revalidation.
+A matching Opening/PedOpening event can also retain a pending OPENING sample
+received within 1.5 seconds. It never publishes a mode by itself: another fresh,
+progressing read is required, and conflicting hints reset confirmation.
 A fresh confirmed Gate state is retained while notifications or new candidate
 samples are checked, instead of flashing Unknown during each transition. These
 checks never extend the 25-second freshness timeout. Configuration writes stay
@@ -126,8 +131,15 @@ cannot classify an opening. The PED/FULL prefix in status replies is never used
 to classify access mode. Untimestamped events still have residual ambiguity if an
 old event coincides with a different real movement, so validate your installation
 before using these modes for announcements. Without a usable hint, the access
-mode remains unresolved until a distinguishing endpoint. Closed confirmation still requires
-samples at least 1 second apart; non-closed confirmation uses 500 ms.
+mode remains unresolved until a distinguishing endpoint. Non-closed confirmation
+uses 500 ms. For the opted-in PS19001 profile, one explicit in-tolerance CLOSED
+reply can finish an established closing cycle: at least two decreasing CLOSING
+readings separated by 500 ms must have reached the closed range within the last
+5 seconds, with synchronized valid physical feedback. Notifications alone, Stop,
+reversal, stale tracking or reconnect cannot take this shortcut. Otherwise Closed
+confirmation retains two samples at least 1 second apart. Untimestamped shared
+UART replies still carry residual freshness uncertainty; these guards do not
+provide independent physical sensing.
 
 One user command can wait behind a background status read, without overlapping
 Bluetooth writes. A second non-Stop command is rejected while that slot is full;

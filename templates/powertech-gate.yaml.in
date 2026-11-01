@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.11"
+    version: "0.9.0-alpha.12"
   on_boot:
     priority: -100
     then:
@@ -94,6 +94,10 @@ globals:
     type: int
     restore_value: false
     initial_value: '${profile_closed_tolerance}'
+  - id: profile_single_closed_after_tracked_closing
+    type: bool
+    restore_value: false
+    initial_value: '${profile_single_closed_after_tracked_closing}'
   - id: profile_opening_event_mode_hint
     type: bool
     restore_value: false

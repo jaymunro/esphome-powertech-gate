@@ -35,7 +35,7 @@ struct Number { float state=0; void publish_state(float s) { state=s; } };
 Text gate_state_source,car_state_source,pedestrian_state_source,gate_lock_state;
 bool monitor_enabled=false,require_gate_unlock=true;
 std::string gate_device_name="WBT01-TEST",profile_model="PS19001",profile_pedestrian_status="SINGLE STOPPED";
-int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true,profile_opening_event_mode_hint=true;
+int profile_full_open_min=95,profile_closed_position=0,profile_closed_tolerance=2; bool profile_supports_pedestrian=true,profile_opening_event_mode_hint=true,profile_single_closed_after_tracked_closing=true;
 Text control_result,poll_health,settings_snapshot,settings_result;
 Text setting_1,setting_2,setting_3,setting_4,setting_5,setting_6,setting_7,setting_8,setting_9,setting_a,setting_b,setting_c,setting_d,setting_e,setting_f,setting_g,setting_h,setting_i,setting_j; Number status_successes,unmatched_replies;
 Text command_status,status_reply,protocol_result,c004_log_1,c004_log_2,c004_log_3,c004_last,ble_capture_status;

@@ -7,7 +7,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
     feedback_.set_profile({id(profile_model), id(profile_pedestrian_status),
       id(profile_full_open_min), id(profile_closed_position), id(profile_supports_pedestrian),
-      id(profile_closed_tolerance), id(profile_opening_event_mode_hint)});
+      id(profile_closed_tolerance), id(profile_opening_event_mode_hint), id(profile_single_closed_after_tracked_closing)});
   }
 
   void maintenance() {
