@@ -136,6 +136,7 @@ class GateFeedback {
   }
   int position() const { return position_; }
   bool available() const { return valid_; }
+  bool confirming() const { return pending_ && !candidate_.empty(); }
   bool confirmed_closed() const { return valid_ && !pending_ && physical_=="closed"; }
   const std::string &gate() const { return physical_; }
   const std::string &car() const { return car_; }

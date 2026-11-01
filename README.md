@@ -111,7 +111,10 @@ when diagnosing contention.
 ## Polling and movement feedback
 
 Closed idle polling waits 1 second after each reply. While open, unsynchronized,
-or within 30 seconds of a controller event/command, it waits 150 ms instead.
+or within 30 seconds of a controller event/command, it waits 50 ms instead.
+While a transition candidate awaits confirmation, the previous 150 ms gap is
+retained: reducing that gap can bring the next reply inside the unchanged
+500 ms confirmation window and unnecessarily require another sample.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.

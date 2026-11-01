@@ -387,6 +387,21 @@ int main() {
   clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
+  // Preserve the confirmation cadence: at a 392ms transport round trip, a 50ms
+  // gap would return a second sample at442ms, inside the unchanged500ms guard.
+  // Keep150ms while pending, then resume50ms after confirmation.
+  reset();esphome::ble_client::Parent cadence_parent;EyeOpenClient cadence(false);cadence.p=&cadence_parent;ready(cadence);
+  event(cadence,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(cadence,0);
+  acknowledge(cadence,"ACK STATUS:PED OPENING,4");
+  const auto pending_writes=writes.size();tick(cadence,149);assert(writes.size()==pending_writes);
+  tick(cadence,1);assert(writes.size()==pending_writes+1);
+  tick(cadence,250);event(cadence,ESP_GATTC_WRITE_CHAR_EVT,106);tick(cadence,0);
+  const auto pending_reads=reads.size();tick(cadence,142);assert(reads.size()==pending_reads);
+  event(cadence,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,12");
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && gate_binary.valid);
+  const auto confirmed_writes=writes.size();tick(cadence,49);assert(writes.size()==confirmed_writes);
+  tick(cadence,1);assert(writes.size()==confirmed_writes+1);
+
   // Closed polling is 1s; notifications prompt a read without overlapping GATT requests.
   reset(); esphome::ble_client::Parent p14; EyeOpenClient c14(false); c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");

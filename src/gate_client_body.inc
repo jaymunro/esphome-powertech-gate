@@ -553,7 +553,9 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint32_t poll_delay(uint32_t now) {
     if (poll_failures_) return poll_interval_;
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 150 : 1000;
+    if(!feedback_.available() || feedback_.gate() != "closed" || fast_window_)
+      return feedback_.confirming() ? 150 : 50;
+    return 1000;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;
