@@ -104,8 +104,11 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     feedback_.tick(now); publish_feedback();
     if (phase_ == IDLE_CONNECTED) {
       if(auto_settings_ && due(now,next_settings_refresh_)) settings_due_=true;
+      // A due settings read must win the Closed-idle poll boundary; waiting
+      // 500ms unconditionally would starve it when status polls every250ms.
+      const uint32_t settings_idle_wait=fast_window_ ? 500 : 250;
       if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.confirmed_closed() &&
-         uint32_t(now-last_poll_)>=500 && id(profile_model)=="PS19001") {
+         uint32_t(now-last_poll_)>=settings_idle_wait && id(profile_model)=="PS19001") {
         settings_due_=false; settings_read_retries_=0;
         next_settings_refresh_=now+300000;
         busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
@@ -555,7 +558,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
     if(!feedback_.available() || feedback_.gate() != "closed" || fast_window_)
       return feedback_.confirming() ? 150 : 50;
-    return 1000;
+    return 250;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;

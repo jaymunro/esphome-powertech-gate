@@ -402,12 +402,12 @@ int main() {
   const auto confirmed_writes=writes.size();tick(cadence,49);assert(writes.size()==confirmed_writes);
   tick(cadence,1);assert(writes.size()==confirmed_writes+1);
 
-  // Closed polling is 1s; notifications prompt a read without overlapping GATT requests.
+  // Closed polling is250ms; notifications prompt a read without overlapping GATT requests.
   reset(); esphome::ble_client::Parent p14; EyeOpenClient c14(false); c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
-  const auto idle_writes=writes.size(); tick(c14,999); assert(writes.size()==idle_writes);
+  const auto idle_writes=writes.size(); tick(c14,249); assert(writes.size()==idle_writes);
   tick(c14,1); assert(writes.size()==idle_writes+1);
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpening"); tick(c14,0); assert(writes.size()==idle_writes+1);
   acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);
@@ -537,7 +537,8 @@ int main() {
   assert(settings_write_count()==0 && settings_result.state.find("unknown extension")!=std::string::npos);
   // Automatic post-connect refresh is read-only and follows confirmed status.
   reset(); esphome::ble_client::Parent p22; EyeOpenClient c22; c22.p=&p22; ready(c22);
-  tick(c22,500); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  const auto before_due_settings=writes.size();tick(c22,249);assert(writes.size()==before_due_settings);
+  tick(c22,1); assert(writes.size()==before_due_settings+1 && writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c22,base); assert(setting_1.state=="Overcurrent" && setting_9.state=="Function OFF");
   assert(settings_write_count()==0);
   // Automatic settings refresh repeats after five minutes, defers until fresh

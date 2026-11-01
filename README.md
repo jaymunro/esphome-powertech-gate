@@ -110,7 +110,7 @@ when diagnosing contention.
 
 ## Polling and movement feedback
 
-Closed idle polling waits 1 second after each reply. While open, unsynchronized,
+Closed idle polling waits 250 ms after each reply. While open, unsynchronized,
 or within 30 seconds of a controller event/command, it waits 50 ms instead.
 While a transition candidate awaits confirmation, the previous 150 ms gap is
 retained: reducing that gap can bring the next reply inside the unchanged
@@ -118,6 +118,8 @@ retained: reducing that gap can bring the next reply inside the unchanged
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
+Due background settings reads take priority at the Closed-idle boundary so
+faster status polling cannot starve automatic configuration refreshes.
 If a notification arrives while a status transaction is waiting on unrelated
 reply content, the bridge can submit a fresh READ STATUS after the outstanding
 GATT operation completes. A new event also leaves idle mismatch backoff promptly. This refresh shares the transaction budget and never repeats a movement command.
