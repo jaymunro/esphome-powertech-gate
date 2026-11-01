@@ -157,14 +157,12 @@ int main() {
   const auto timing_auth_reads=reads.size();
   tick(timing,300); assert(reads.size()==timing_auth_reads);
   event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
-  tick(timing,49); assert(reads.size()==timing_auth_reads);
-  tick(timing,1); assert(reads.size()==timing_auth_reads+1 && reads.back()==106);
+  tick(timing,0); assert(reads.size()==timing_auth_reads+1 && reads.back()==106);
   tick(timing,300); assert(reads.size()==timing_auth_reads+1);
   event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==2 && writes.back().payload=="C=READ STATUS;src=P9999999");
   event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
-  tick(timing,49); assert(reads.size()==timing_auth_reads+1);
-  tick(timing,1); assert(reads.size()==timing_auth_reads+2);
+  tick(timing,0); assert(reads.size()==timing_auth_reads+2);
   event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
   assert(timing_parent.disconnections==0 && !gate_binary.valid);
 
@@ -200,7 +198,7 @@ int main() {
 
   // Zero-delay audit reads immediately after confirmed write completion, never
   // before it. A plausible old CLOSED reply cannot reach feedback before the
-  // later OPENING reply; normal mode ignores the audit-only zero override.
+  // later OPENING reply; normal mode ignores a nonzero audit override.
   reset(); esphome::ble_client::Parent zero_parent; EyeOpenClient zero(false,true,0);zero.p=&zero_parent;
   zero.request("READ STATUS");discover(zero);unlock_without_challenge(zero);
   status_reply.state="unchanged";const auto zero_auth_reads=reads.size();
@@ -213,11 +211,10 @@ int main() {
   assert(reads.size()==zero_auth_reads+2);
   event(zero,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,8");
   assert(status_reply.state=="ACK STATUS:PED OPENING,8");
-  reset();esphome::ble_client::Parent normal_wait_parent;EyeOpenClient normal_wait(false,false,0);normal_wait.p=&normal_wait_parent;
+  reset();esphome::ble_client::Parent normal_wait_parent;EyeOpenClient normal_wait(false,false,150);normal_wait.p=&normal_wait_parent;
   normal_wait.request("READ STATUS");discover(normal_wait);unlock_without_challenge(normal_wait);
   event(normal_wait,ESP_GATTC_WRITE_CHAR_EVT,106);const auto normal_auth_reads=reads.size();
-  tick(normal_wait,49);assert(reads.size()==normal_auth_reads);
-  tick(normal_wait,1);assert(reads.size()==normal_auth_reads+1);
+  tick(normal_wait,0);assert(reads.size()==normal_auth_reads+1);
 
   // Motion cannot be written before authentication AND a baseline status reply.
   reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
@@ -707,7 +704,7 @@ int main() {
   // A C004 event during a stale-reply wait immediately refreshes READ STATUS,
   // once per transaction. It never issues another motion or overlapping read.
   reset();esphome::ble_client::Parent p34;EyeOpenClient c34(false);c34.p=&p34;ready(c34);
-  tick(c34,1000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c34,0);
+  tick(c34,1000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);
   const auto stale_writes=writes.size(),stale_reads=reads.size();
   event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
   assert(writes.size()==stale_writes+1 && reads.size()==stale_reads);
@@ -736,15 +733,14 @@ int main() {
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(p35.disconnections==0);
   // No notification is needed for fresh status recovery. Refresh immediately
-  // after the completed stale read, but keep the normal 50ms response wait.
+  // after the completed stale read, but keep the zero added response wait.
   reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
   tick(c36,1000);const auto original_writes=writes.size();
   acknowledge(c36,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==original_writes+1);
   const auto before_refresh_read=reads.size();tick(c36,0);
   assert(reads.size()==before_refresh_read); // No read while GATT write is outstanding.
-  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,49);assert(reads.size()==before_refresh_read);
-  tick(c36,1);assert(reads.size()==before_refresh_read+1);
+  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,0);assert(reads.size()==before_refresh_read+1);
   event(c36,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS");
   assert(writes.size()==original_writes+2);
   event(c36,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");

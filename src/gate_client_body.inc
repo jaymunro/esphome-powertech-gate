@@ -3,7 +3,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
  public:
   explicit EyeOpenClient(bool auto_settings=true, bool status_read_audit=false, uint32_t audit_wait_ms=50) {
     status_read_audit_=status_read_audit;
-    status_first_read_wait_=status_read_audit ? std::min(audit_wait_ms,uint32_t(200)) : 50;
+    status_first_read_wait_=status_read_audit ? std::min(audit_wait_ms,uint32_t(200)) : 0;
     auto_settings_=auto_settings; settings_due_=auto_settings;
     next_reconnect_=millis(); next_settings_refresh_=millis();
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
@@ -538,7 +538,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
   uint32_t status_transaction_{0}, status_submitted_at_{0}, status_write_completed_at_{0}, status_read_started_at_{0};
   bool status_read_audit_{false}, status_audit_pending_{false};
-  uint32_t status_first_read_wait_{50};
+  uint32_t status_first_read_wait_{0};
   uint32_t status_early_at_{0}; std::string status_early_reply_;
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
   unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};

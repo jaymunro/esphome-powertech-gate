@@ -43,8 +43,8 @@ controller percentage, not an independently measured leaf angle; it becomes
 Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
 Shared UART reply mismatches refresh READ STATUS immediately after the completed
 GATT read, with two refreshes maximum per transaction (shared with notification
-recovery). Status reads wait 50ms after confirmed GATT write completion before
-the first reply read. Debug logs under `gate_timing` record the write, wait,
+recovery). Status reads request the reply immediately after confirmed GATT write
+completion, without an added first-read wait. Debug logs under `gate_timing` record the write, wait,
 read and total durations plus whether the reply matched the expected acknowledgement;
 a matching reply alone does not prove freshness. A developer-only constructor
 option enables paired-read auditing: the early result is withheld, a second read
@@ -52,8 +52,8 @@ starts no earlier than 200ms after write completion, and only that later result
 enters feedback. This diagnostic changes transaction duration and is disabled
 by default; a difference may reflect legitimate movement rather than staleness.
 The audit-only third constructor argument selects an early-read wait from
-0–200ms. It has no effect when auditing is disabled, so diagnostic zero-delay
-trials cannot silently change the normal 50ms setting.
+0–200ms. It has no effect when auditing is disabled, so diagnostic
+trials do not change normal zero-delay operation.
 Exhausted transactions retry after
 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
