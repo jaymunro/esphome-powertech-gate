@@ -150,6 +150,24 @@ int main() {
   assert(EyeOpenClient::integer_field("XC=1;C=45057;R=0","C")==45057);
   assert(EyeOpenClient::integer_field("C=99999999999999","C")==-1);
 
+  // The status first-read wait starts at confirmed write completion, not submission.
+  // No early/concurrent reads; an unrelated reply still gets a fresh bounded request.
+  reset(); esphome::ble_client::Parent timing_parent; EyeOpenClient timing(false); timing.p=&timing_parent;
+  timing.request("READ STATUS"); discover(timing); unlock_without_challenge(timing);
+  const auto timing_auth_reads=reads.size();
+  tick(timing,300); assert(reads.size()==timing_auth_reads);
+  event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(timing,99); assert(reads.size()==timing_auth_reads);
+  tick(timing,1); assert(reads.size()==timing_auth_reads+1 && reads.back()==106);
+  tick(timing,300); assert(reads.size()==timing_auth_reads+1);
+  event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==2 && writes.back().payload=="C=READ STATUS;src=P9999999");
+  event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(timing,99); assert(reads.size()==timing_auth_reads+1);
+  tick(timing,1); assert(reads.size()==timing_auth_reads+2);
+  event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(timing_parent.disconnections==0 && !gate_binary.valid);
+
   // Motion cannot be written before authentication AND a baseline status reply.
   reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
   client.request("PED OPEN"); assert(writes.empty()); discover(client); assert(writes.empty());
@@ -667,14 +685,14 @@ int main() {
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(p35.disconnections==0);
   // No notification is needed for fresh status recovery. Refresh immediately
-  // after the completed stale read, but keep the normal 200ms response wait.
+  // after the completed stale read, but keep the normal 100ms response wait.
   reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
   tick(c36,1000);const auto original_writes=writes.size();
   acknowledge(c36,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==original_writes+1);
   const auto before_refresh_read=reads.size();tick(c36,0);
   assert(reads.size()==before_refresh_read); // No read while GATT write is outstanding.
-  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,199);assert(reads.size()==before_refresh_read);
+  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,99);assert(reads.size()==before_refresh_read);
   tick(c36,1);assert(reads.size()==before_refresh_read+1);
   event(c36,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS");
   assert(writes.size()==original_writes+2);

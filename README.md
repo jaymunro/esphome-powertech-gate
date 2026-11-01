@@ -43,7 +43,10 @@ controller percentage, not an independently measured leaf angle; it becomes
 Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
 Shared UART reply mismatches refresh READ STATUS immediately after the completed
 GATT read, with two refreshes maximum per transaction (shared with notification
-recovery). The 200ms first-read wait remains. Exhausted transactions retry after
+recovery). Status reads wait 100ms after confirmed GATT write completion before
+the first reply read. Debug logs under `gate_timing` record the write, wait,
+read and total durations plus whether the reply matched the expected acknowledgement;
+a matching reply alone does not prove freshness. Exhausted transactions retry after
 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
 is automatically retried. A connected Bluetooth link alone does not guarantee

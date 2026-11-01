@@ -132,6 +132,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     if (phase_ == REPLY_WAIT && due(now, deadline_)) {
       phase_ = REPLY_READ; deadline_ = now + 3000;
+      if(wire_command_=="READ STATUS") status_read_started_at_=now;
       const auto err = esp_ble_gattc_read_char(this->parent()->get_gattc_if(),
           this->parent()->get_conn_id(), command_handle_, ESP_GATT_AUTH_REQ_NONE);
       if (err != ESP_OK) fail("Could not request UART reply; command not retried");
@@ -229,8 +230,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
           feedback_.commanded_open(wire_command_=="PED OPEN",millis());
         if (movement_command(wire_command_)) motion_ack_deadline_=millis()+2000;
+        if(wire_command_=="READ STATUS") status_write_completed_at_=millis();
         phase_ = REPLY_WAIT;
-        deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : (movement_command(wire_command_) ? 0 : 200));
+        deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 :
+            (movement_command(wire_command_) ? 0 : (wire_command_=="READ STATUS" ? 100 : 200)));
       }
       return;
     }
@@ -255,6 +258,13 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         } else fail("Authentication was not confirmed; no gate command sent");
       } else if (param->read.handle == command_handle_ && phase_ == REPLY_READ) {
         const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
+        if(wire_command_=="READ STATUS") {
+          const uint32_t completed=millis();
+          ESP_LOGD("gate_timing", "Status transaction=%u write_ms=%u wait_ms=%u read_ms=%u total_ms=%u matching_ack=%d",
+                   unsigned(status_transaction_), unsigned(status_write_completed_at_-status_submitted_at_),
+                   unsigned(status_read_started_at_-status_write_completed_at_), unsigned(completed-status_read_started_at_),
+                   unsigned(completed-status_submitted_at_), int(write_confirmed_ && matching_ack(reply,wire_command_)));
+        }
         id(status_reply).publish_state(reply.substr(0, 250));
         if (write_confirmed_ && matching_ack(reply, wire_command_)) {
           last_uart_reply_=millis();
@@ -506,6 +516,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   bool baseline_needed_{false}, write_confirmed_{false}, background_poll_{false};
   uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
+  uint32_t status_transaction_{0}, status_submitted_at_{0}, status_write_completed_at_{0}, status_read_started_at_{0};
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
   unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};
   void refresh_status_after_event() {
@@ -644,6 +655,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       id(settings_result).publish_state("Saving setting; waiting for acknowledgement");
     }
     phase_ = COMMAND_WRITE; deadline_ = millis() + 4000; write_confirmed_ = false;
+    if(wire_command_=="READ STATUS") { ++status_transaction_; status_submitted_at_=millis(); }
     status("Sending: " + wire_command_);
     if (wire_command_ == "READ STATUS") { status_due_=false; id(poll_health).publish_state("Requesting status"); }
     else id(control_result).publish_state("Sending: " + wire_command_);
