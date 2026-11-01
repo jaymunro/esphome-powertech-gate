@@ -39,8 +39,10 @@ CLOSED status and repeated fresh confirmation. CLOSED outside that tolerance mak
 Gate state Unknown rather than falsely refreshing Open. Gate position is the raw
 controller percentage, not an independently measured leaf angle; it becomes
 Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
-Shared UART reply mismatches
-retry status reads after 1, 2, then 5 seconds without tearing down a healthy
+Shared UART reply mismatches refresh READ STATUS immediately after the completed
+GATT read, with two refreshes maximum per transaction (shared with notification
+recovery). The 200ms first-read wait remains. Exhausted transactions retry after
+1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
 is automatically retried. A connected Bluetooth link alone does not guarantee
 fresh feedback. See
@@ -101,8 +103,8 @@ These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
 If a notification arrives while a status transaction is waiting on unrelated
-reply content, the bridge submits one fresh READ STATUS after the outstanding
-GATT operation completes. A new event also leaves idle mismatch backoff promptly. This bounded refresh never repeats a movement command.
+reply content, the bridge can submit a fresh READ STATUS after the outstanding
+GATT operation completes. A new event also leaves idle mismatch backoff promptly. This refresh shares the transaction budget and never repeats a movement command.
 Compatible endpoint notifications preserve a pending fresh confirmation rather
 than restarting its timer; stable Closed still requires fresh revalidation.
 A fresh confirmed Gate state is retained while notifications or new candidate

@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.10"
+    version: "0.9.0-alpha.11"
   on_boot:
     priority: -100
     then:
@@ -532,7 +532,7 @@ esphome:
                 if(phase_==IDLE_CONNECTED) poll_failures_=0;
                 // Refresh the UART request rather than rereading an overwritten buffer.
                 // Never overlap an outstanding GATT write/read or resend a motion command.
-                if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 &&
+                if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
                    (phase_==REPLY_WAIT || phase_==REPLY_READ)) {
                   status_event_refresh_pending_=true;
                   if(phase_==REPLY_WAIT) refresh_status_after_event();
@@ -635,19 +635,25 @@ esphome:
                     // user wait through background-only rereads; never bypass reconnect
                     // baseline validation or interrupt an outstanding GATT operation.
                     wire_command_.clear(); next_command();
-                  } else if(wire_command_=="READ STATUS" && status_event_refresh_pending_ && status_event_refreshes_<1) {
+                  } else if(wire_command_=="READ STATUS" && status_event_refresh_pending_ && status_event_refreshes_<1 && status_refreshes_<2) {
                     refresh_status_after_event();
+                  } else if(wire_command_=="READ STATUS") {
+                    id(unmatched_replies).publish_state(++unmatched_replies_);
+                    // The completed GATT read exposed an unrelated shared UART buffer.
+                    // Ask the board again rather than rereading that same stale content.
+                    // Initial request + two refreshes maximum, shared with event recovery.
+                    if(status_refreshes_<2) {
+                      ++status_refreshes_;
+                      id(poll_health).publish_state("Unrelated status reply; requesting fresh status");
+                      write_command(true);
+                    } else fail("No matching status reply");
                   } else if (movement_command(wire_command_) && write_confirmed_) {
                     // Read again as soon as this completed read allows. No fixed pause,
                     // no concurrent GATT reads, and no movement retransmission.
                     if (++read_attempts_<12 && !due(millis(),motion_ack_deadline_)) {
                       phase_=REPLY_WAIT; deadline_=millis();
                     } else fail("No matching UART acknowledgement; command outcome uncertain; not retried");
-                  } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : (wire_command_=="READ STATUS" ? 3u : 10u))) {
-                    if (wire_command_ == "READ STATUS") {
-                      id(poll_health).publish_state("Waiting for status; unrelated or incomplete reply ignored");
-                      id(unmatched_replies).publish_state(++unmatched_replies_);
-                    }
+                  } else if (++read_attempts_ < (wire_command_=="READ FUNCTION" ? 5u : 10u)) {
                     phase_ = REPLY_WAIT; deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 500 : 750);
                   } else fail(wire_command_ == "READ STATUS" ? "No matching status reply" :
                               "No matching UART acknowledgement; command outcome uncertain; not retried");
@@ -838,9 +844,9 @@ esphome:
             uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
             uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
             unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
-            unsigned status_event_refreshes_{0}; bool status_event_refresh_pending_{false};
+            unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};
             void refresh_status_after_event() {
-              status_event_refresh_pending_=false; ++status_event_refreshes_;
+              status_event_refresh_pending_=false; ++status_event_refreshes_; ++status_refreshes_;
               ESP_LOGD("gate_protocol", "Notification requested a fresh status transaction; read only");
               write_command(true);
             }
@@ -962,7 +968,7 @@ esphome:
               write_command();
             }
             void write_command(bool event_refresh=false) {
-              if(!event_refresh) { status_event_refreshes_=0; status_event_refresh_pending_=false; }
+              if(!event_refresh) { status_event_refreshes_=status_refreshes_=0; status_event_refresh_pending_=false; }
               if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
                 phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;
               }

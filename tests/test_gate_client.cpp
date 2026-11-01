@@ -175,7 +175,7 @@ int main() {
   reset(); esphome::ble_client::Parent startup_parent; EyeOpenClient startup(false); startup.p=&startup_parent;
   startup.request("READ STATUS"); discover(startup); unlock_without_challenge(startup);
   acknowledge(startup,"ERROR:READ STATUS");
-  for(int i=0;i<2;++i) { tick(startup,750);event(startup,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS"); }
+  for(int i=0;i<2;++i) acknowledge(startup,"ERROR:READ STATUS");
   assert(startup_parent.disconnections==0);
   tick(startup,1000);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
   acknowledge(startup,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
@@ -212,10 +212,10 @@ int main() {
   reset(); esphome::ble_client::Parent p4; EyeOpenClient c4(false); c4.p=&p4;
   c4.request("PED OPEN"); discover(c4); unlock_without_challenge(c4);
   acknowledge(c4,"C=ACK FULL OPEN");
-  assert(writes.size()==1 && writes.back().payload=="C=READ STATUS;src=P9999999");
-  for(int i=0;i<3;++i) { tick(c4,750); event(c4,ESP_GATTC_READ_CHAR_EVT,106,"C=ACK FULL OPEN"); }
-  assert(writes.size()==1 && p4.disconnections>0);
-  // A poll ignores unrelated lines until a matching status arrives; no C000 resend.
+  assert(writes.size()==2 && writes.back().payload=="C=READ STATUS;src=P9999999");
+  for(int i=0;i<2;++i) acknowledge(c4,"C=ACK FULL OPEN");
+  assert(writes.size()==3 && p4.disconnections>0);
+  // A poll refreshes a stale UART buffer with READ STATUS only.
   reset(); esphome::ble_client::Parent p5; EyeOpenClient c5(false); c5.p=&p5;
   c5.request("READ STATUS"); discover(c5); unlock_without_challenge(c5);
   acknowledge(c5,"C=ACK STATUS:PED CLOSED,0");
@@ -224,14 +224,14 @@ int main() {
   tick(c5,10000); const auto before_poll_reads=writes.size();
   acknowledge(c5,"C=ERROR:READ LIGHT STATUS;src=other");
   assert(control_result.state=="Acknowledged: PED OPEN" && p5.disconnections==0);
-  tick(c5,750); event(c5,ESP_GATTC_READ_CHAR_EVT,106,"C=ACK STATUS:SINGLE STOPPED,25");
-  assert(writes.size()==before_poll_reads && poll_health.state=="Status reply received");
+  acknowledge(c5,"C=ACK STATUS:SINGLE STOPPED,25");
+  assert(writes.size()==before_poll_reads+1 && poll_health.state=="Status reply received");
   assert(control_result.state=="Acknowledged: PED OPEN");
 
   // A wholly mismatching background reply has bounded reads and backs off,
   // retaining the successful motion result. Only READ STATUS is issued later.
   tick(c5,10000); acknowledge(c5,"C=ERROR:READ LIGHT STATUS;src=other");
-  for(int i=0;i<2;++i) { tick(c5,750); event(c5,ESP_GATTC_READ_CHAR_EVT,106,"C=unrelated"); }
+  for(int i=0;i<2;++i) acknowledge(c5,"C=unrelated");
   assert(p5.disconnections==0 && poll_health.state.find("mismatch 1")!=std::string::npos);
   assert(control_result.state=="Acknowledged: PED OPEN");
   const auto failed_poll_writes=writes.size(); tick(c5,999);
@@ -253,9 +253,9 @@ int main() {
   for(int failure=0;failure<4;++failure) {
     tick(c6,failure==0?10000:(failure==1?1000:(failure==2?2000:5000)));
     acknowledge(c6,"C=unrelated");
-    for(int i=0;i<2;++i) { tick(c6,750); event(c6,ESP_GATTC_READ_CHAR_EVT,106,"C=unrelated"); }
+    for(int i=0;i<2;++i) acknowledge(c6,"C=unrelated");
   }
-  assert(p6.disconnections==0 && writes.size()==5);
+  assert(p6.disconnections==0 && writes.size()==13);
   tick(c6,5000); acknowledge(c6,"C=ACK STATUS:PED CLOSED,1");
   assert(p6.disconnections==0 && poll_health.state=="Status reply received");
   assert(control_result.state.empty());
@@ -638,15 +638,15 @@ int main() {
   // A C004 event during a stale-reply wait immediately refreshes READ STATUS,
   // once per transaction. It never issues another motion or overlapping read.
   reset();esphome::ble_client::Parent p34;EyeOpenClient c34(false);c34.p=&p34;ready(c34);
-  tick(c34,1000);acknowledge(c34,"ERROR:READ LIGHT STATUS");
+  tick(c34,1000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c34,0);
   const auto stale_writes=writes.size(),stale_reads=reads.size();
   event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
   assert(writes.size()==stale_writes+1 && reads.size()==stale_reads);
   assert(writes.back().payload=="C=READ STATUS;src=P9999999");
   event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");assert(writes.size()==stale_writes+1);
   acknowledge(c34,"unrelated");event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
-  assert(writes.size()==stale_writes+1); // Duplicate events cannot reset the budget.
-  for(int i=0;i<2;++i){tick(c34,750);event(c34,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+  assert(writes.size()==stale_writes+2); // Generic refresh shares the event budget.
+  acknowledge(c34,"unrelated");
   assert(p34.disconnections==0 && poll_health.state.find("mismatch 1")!=std::string::npos);
   for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
   // Capture regression: an Opening arriving after exhausted reads must bypass
@@ -666,5 +666,24 @@ int main() {
   tick(c35,500);acknowledge(c35,"ACK STATUS:PED OPENING,24");
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(p35.disconnections==0);
-  puts("Protocol, native cover, event recovery and guarded settings transaction checks passed (mock Bluetooth/hash). ");
+  // No notification is needed for fresh status recovery. Refresh immediately
+  // after the completed stale read, but keep the normal 200ms response wait.
+  reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
+  tick(c36,1000);const auto original_writes=writes.size();
+  acknowledge(c36,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==original_writes+1);
+  const auto before_refresh_read=reads.size();tick(c36,0);
+  assert(reads.size()==before_refresh_read); // No read while GATT write is outstanding.
+  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,199);assert(reads.size()==before_refresh_read);
+  tick(c36,1);assert(reads.size()==before_refresh_read+1);
+  event(c36,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS");
+  assert(writes.size()==original_writes+2);
+  event(c36,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  acknowledge(c36,"unrelated");
+  assert(writes.size()==original_writes+2 && p36.disconnections==0);
+  const auto exhausted=writes.size();tick(c36,999);assert(writes.size()==exhausted);
+  tick(c36,1);assert(writes.size()==exhausted+1); // Existing failure backoff retained.
+  acknowledge(c36,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
+  for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
+  puts("Protocol, native cover, bounded fresh status recovery and guarded settings checks passed (mock Bluetooth/hash). ");
 }
