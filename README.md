@@ -326,3 +326,13 @@ bridge retains the healthy link and resumes status reads. The outcome remains
 explicitly uncertain; no movement is replayed. A failed GATT operation still
 uses transport-failure handling. This avoids an eight-second telemetry stall
 and reconnect quarantine solely because another client overwrote the ACK.
+
+### Retained link diagnostics
+
+The bridge keeps the last four transport failures/disconnect reasons in RAM and
+repeats them in DEBUG logs once per minute, with event age, protocol phase and
+operation category. They are not Home Assistant entities and contain no PIN or
+command payload. This bounded buffer survives Bluetooth reconnects, but not an
+ESP32 restart. A log capture opened after a dropout can therefore recover its
+reason without continuously streaming logs. It is diagnostic evidence, not an
+automatic inference of the root cause.

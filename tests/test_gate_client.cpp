@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <functional>
 #include <string>
 #include <vector>
@@ -13,7 +14,11 @@ using esp_err_t = int; using esp_gatt_if_t = int;
 constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0, ESP_GATT_IF_NONE=255;
 enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
-void test_log(const char *, const char *, ...) {}
+std::vector<std::string> log_lines;
+void test_log(const char *, const char *format, ...) {
+ char buffer[512];va_list args;va_start(args,format);vsnprintf(buffer,sizeof(buffer),format,args);va_end(args);
+ log_lines.emplace_back(buffer);
+}
 #define ESP_LOGW test_log
 #define ESP_LOGD test_log
 struct esp_ble_gattc_cb_param_t {
@@ -839,5 +844,17 @@ int main() {
   tick(c36,1);assert(writes.size()==exhausted+1); // Existing failure backoff retained.
   acknowledge(c36,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
   for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
+  // Link evidence survives reconnects and stays bounded to four events. Logs
+  // expose operation category, not a full command/settings/credential payload.
+  reset();esphome::ble_client::Parent diagnostic_parent;EyeOpenClient diagnostic(false);diagnostic.p=&diagnostic_parent;
+  ready(diagnostic);
+  for(int reason=1;reason<=6;++reason) {
+    esp_ble_gattc_cb_param_t closed;closed.close.reason=reason;
+    diagnostic.gattc_event_handler(ESP_GATTC_CLOSE_EVT,1,&closed);clock_ms+=1000;
+  }
+  log_lines.clear();diagnostic.dump_link_diagnostics();
+  assert(log_lines.size()==5 && log_lines[0].find("events=4")!=std::string::npos);
+  for(int i=0;i<4;++i) assert(log_lines[i+1].find("reason="+std::to_string(i+3))!=std::string::npos);
+  for(const auto &line:log_lines) assert(line.find("P9999999")==std::string::npos);
   puts("Protocol, native cover, bounded fresh status recovery and guarded settings checks passed (mock Bluetooth/hash). ");
 }

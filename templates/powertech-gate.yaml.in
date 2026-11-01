@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.21"
+    version: "0.9.0-alpha.22"
   on_boot:
     priority: -100
     then:

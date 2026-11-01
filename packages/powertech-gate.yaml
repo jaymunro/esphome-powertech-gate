@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.21"
+    version: "0.9.0-alpha.22"
   on_boot:
     priority: -100
     then:
@@ -405,7 +405,15 @@ esphome:
                 id(profile_closed_tolerance), id(profile_opening_event_mode_hint), id(profile_single_closed_after_tracked_closing)});
             }
           
+            void dump_link_diagnostics() {
+              ESP_LOGD("gate_link_retained", "Retained link events=%u; current phase=%d, status failures=%u",
+                       unsigned(link_events_.size()),int(phase_),poll_failures_);
+              for(const auto &entry:link_events_)
+                ESP_LOGD("gate_link_retained", "age_ms=%u %s",unsigned(millis()-entry.first),entry.second.c_str());
+              next_link_dump_=millis()+60000;
+            }
             void maintenance() {
+              if(!link_events_.empty() && due(millis(),next_link_dump_)) dump_link_diagnostics();
               // ESPHome disables its idle BLE-client loop. Keep our connection deadline
               // alive independently, including when a connection produced no GATT event.
               if(id(control_session)) loop();
@@ -550,6 +558,7 @@ esphome:
                                      esp_ble_gattc_cb_param_t *param) override {
               if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
               if (event == ESP_GATTC_CLOSE_EVT) {
+                remember_link_event("close reason="+std::to_string(int(param->close.reason)));
                 background_settings_read_=settings_yield_pending_=false;
                 const bool settings_active=edit_stage_!=EDIT_IDLE;
                 cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after Bluetooth loss; refresh settings; not retried" : "Bluetooth disconnected before settings write; not retried");
@@ -877,6 +886,17 @@ esphome:
               AUTH_WRITE, AUTH_VERIFY_WAIT, AUTH_VERIFY_READ, COMMAND_WAIT,
               COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED, QUIET_WAIT, SETTINGS_RETRY_WAIT };
             Phase phase_{IDLE};
+            std::vector<std::pair<uint32_t,std::string>> link_events_;
+            uint32_t next_link_dump_{0};
+            void remember_link_event(const std::string &message) {
+              const std::string operation=wire_command_=="READ STATUS" ? "status" :
+                  (wire_command_=="READ FUNCTION" ? "settings-read" :
+                   (wire_command_.rfind("WRITE FUNCTION",0)==0 ? "settings-write" :
+                    (movement_command(wire_command_) ? "motion" : "session")));
+              if(link_events_.size()==4) link_events_.erase(link_events_.begin());
+              link_events_.push_back({millis(),message+" phase="+std::to_string(int(phase_))+" op="+operation});
+              next_link_dump_=millis();
+            }
             GateFeedback feedback_;
             enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
             EditStage edit_stage_{EDIT_IDLE};
@@ -1056,6 +1076,7 @@ esphome:
                 }
                 phase_ = IDLE_CONNECTED; return;
               }
+              remember_link_event("failure="+message);
               ESP_LOGW("gate_link", "Operation failed: %s (phase=%d)", message.c_str(), int(phase_));
               next_reconnect_ = millis() + reconnect_delay_;
               reconnect_delay_ = std::min(uint32_t(120000), reconnect_delay_ * 2);
