@@ -403,12 +403,26 @@ int main() {
   // Immediate scheduling must still serialize the outstanding transaction.
   tick(cadence,0);assert(writes.size()==confirmed_writes+1);
 
-  // Closed polling is250ms; notifications prompt a read without overlapping GATT requests.
+  // Idle listening keeps fresh Closed without traffic, then an unsolicited
+  // event starts a read on the next loop, long before the10s health deadline.
+  reset();esphome::ble_client::Parent listen_parent;EyeOpenClient listener(false);listener.p=&listen_parent;ready(listener);
+  const auto quiet_writes=writes.size();tick(listener,1000);
+  assert(writes.size()==quiet_writes && gate_binary.valid && !gate_binary.state);
+  event(listener,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==quiet_writes); // Event is a wakeup, not physical proof.
+  assert(gate_binary.valid && !gate_binary.state);
+  tick(listener,0);assert(writes.size()==quiet_writes+1);
+  tick(listener,0);assert(writes.size()==quiet_writes+1); // No overlapping GATT.
+  acknowledge(listener,"ACK STATUS:PED OPENING,4");tick(listener,500);
+  acknowledge(listener,"ACK STATUS:PED OPENING,12");
+  assert(car_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && gate_binary.state);
+
+  // Listening-first Closed health checks are10s; notifications wake reads immediately.
   reset(); esphome::ble_client::Parent p14; EyeOpenClient c14(false); c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
-  const auto idle_writes=writes.size(); tick(c14,249); assert(writes.size()==idle_writes);
+  const auto idle_writes=writes.size(); tick(c14,9999); assert(writes.size()==idle_writes);
   tick(c14,1); assert(writes.size()==idle_writes+1);
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpening"); tick(c14,0); assert(writes.size()==idle_writes+1);
   acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);
@@ -457,6 +471,12 @@ int main() {
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1"); assert(!gate_binary.valid);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && ped_cover.position==0 && car_cover.position==0);
+
+  // Confirmed closure returns to quiet listening immediately, even following
+  // recent notifications, without keeping the former30s fast window alive.
+  const auto closed_again_writes=writes.size();tick(c14,9999);
+  assert(writes.size()==closed_again_writes && gate_binary.valid && !gate_binary.state);
+  tick(c14,1);assert(writes.size()==closed_again_writes+1);
 
   // The software lock is checked again after a command queued behind a poll.
   reset(); esphome::ble_client::Parent p15; EyeOpenClient c15(false); c15.p=&p15;
@@ -678,7 +698,7 @@ int main() {
   // Once a background read completes, a queued movement need not wait on
   // unrelated-reply rereads. Never interrupt an outstanding GATT operation.
   reset();esphome::ble_client::Parent p29;EyeOpenClient c29(false);c29.p=&p29;ready(c29);
-  tick(c29,1000);const auto queued_count=writes.size();c29.request("FULL OPEN");
+  tick(c29,10000);const auto queued_count=writes.size();c29.request("FULL OPEN");
   assert(writes.size()==queued_count);
   acknowledge(c29,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==queued_count+1 && writes.back().payload=="C=FULL OPEN;src=P9999999");
@@ -691,7 +711,7 @@ int main() {
   for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
   // A lock change is still honoured on the faster unrelated-read handoff.
   reset();esphome::ble_client::Parent p31;EyeOpenClient c31(false);c31.p=&p31;ready(c31);
-  tick(c31,1000);c31.request("PED OPEN");gate_lock_state.state="locked";
+  tick(c31,10000);c31.request("PED OPEN");gate_lock_state.state="locked";
   acknowledge(c31,"ERROR:READ LIGHT STATUS");
   for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
   // A lost motion ACK must not stall telemetry for ten reads then reconnect.
@@ -721,7 +741,7 @@ int main() {
   // A C004 event during a stale-reply wait immediately refreshes READ STATUS,
   // once per transaction. It never issues another motion or overlapping read.
   reset();esphome::ble_client::Parent p34;EyeOpenClient c34(false);c34.p=&p34;ready(c34);
-  tick(c34,1000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(c34,10000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);
   const auto stale_writes=writes.size(),stale_reads=reads.size();
   event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
   assert(writes.size()==stale_writes+1 && reads.size()==stale_reads);
@@ -739,7 +759,7 @@ int main() {
   assert(writes.size()==backed_off_writes+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   // If a read is in flight, refresh only after its mismatching result arrives.
   reset();esphome::ble_client::Parent p35;EyeOpenClient c35(false);c35.p=&p35;ready(c35);
-  tick(c35,1000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);
+  tick(c35,10000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);
   const auto inflight_writes=writes.size(),inflight_reads=reads.size();
   event(c35,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(c35,0);
   assert(writes.size()==inflight_writes && reads.size()==inflight_reads);
@@ -752,7 +772,7 @@ int main() {
   // No notification is needed for fresh status recovery. Refresh immediately
   // after the completed stale read, but keep the zero added response wait.
   reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
-  tick(c36,1000);const auto original_writes=writes.size();
+  tick(c36,10000);const auto original_writes=writes.size();
   acknowledge(c36,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==original_writes+1);
   const auto before_refresh_read=reads.size();tick(c36,0);

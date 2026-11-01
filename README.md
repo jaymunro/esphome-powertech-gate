@@ -110,8 +110,13 @@ when diagnosing contention.
 
 ## Polling and movement feedback
 
-Closed idle polling waits 250 ms after each reply. While open, unsynchronized,
-or within 30 seconds of a controller event/command, it starts the next transaction without an added scheduling delay.
+Experimental listening-first mode waits 10 seconds between health reads while
+freshly confirmed Closed. A notification or a local movement command wakes status
+reads immediately. While open or unsynchronized, each completed reply allows the
+next transaction without an added scheduling delay. Confirmed closure returns to
+listening immediately, without a post-movement fast window. A missed notification
+can delay movement detection until the next health read; notification coverage for
+all opening sources is still under validation. Feedback still expires after 25s.
 While a transition candidate awaits confirmation, the previous 150 ms gap is
 retained: reducing that gap can bring the next reply inside the unchanged
 500 ms confirmation window and unnecessarily require another sample.

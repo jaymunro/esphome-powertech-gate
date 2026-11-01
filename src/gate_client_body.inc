@@ -556,9 +556,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint32_t poll_delay(uint32_t now) {
     if (poll_failures_) return poll_interval_;
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-    if(!feedback_.available() || feedback_.gate() != "closed" || fast_window_)
+    // Listen first after confirmed Closed. A notification/command sets status_due_
+    // and wakes status reads immediately; a 10s health read covers missed events
+    // without extending the 25s feedback freshness limit.
+    if(!feedback_.available() || feedback_.gate() != "closed" || feedback_.confirming())
       return feedback_.confirming() ? 150 : 0;
-    return 250;
+    return 10000;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;
