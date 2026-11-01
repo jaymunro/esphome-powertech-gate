@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.13"
+    version: "0.9.0-alpha.14"
   on_boot:
     priority: -100
     then:
@@ -368,7 +368,8 @@ esphome:
           // Embedded in the private ESPHome on_boot lambda. No credentials in this file.
           class EyeOpenClient : public esphome::ble_client::BLEClientNode {
            public:
-            explicit EyeOpenClient(bool auto_settings=true) {
+            explicit EyeOpenClient(bool auto_settings=true, bool status_read_audit=false) {
+              status_read_audit_=status_read_audit;
               auto_settings_=auto_settings; settings_due_=auto_settings;
               next_reconnect_=millis(); next_settings_refresh_=millis();
               this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
@@ -563,7 +564,7 @@ esphome:
                 if(phase_==IDLE_CONNECTED) poll_failures_=0;
                 // Refresh the UART request rather than rereading an overwritten buffer.
                 // Never overlap an outstanding GATT write/read or resend a motion command.
-                if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
+                if(wire_command_=="READ STATUS" && !status_audit_pending_ && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
                    (phase_==REPLY_WAIT || phase_==REPLY_READ)) {
                   status_event_refresh_pending_=true;
                   if(phase_==REPLY_WAIT) refresh_status_after_event();
@@ -600,7 +601,7 @@ esphome:
                   if(wire_command_=="READ STATUS") status_write_completed_at_=millis();
                   phase_ = REPLY_WAIT;
                   deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 :
-                      (movement_command(wire_command_) ? 0 : (wire_command_=="READ STATUS" ? 100 : 200)));
+                      (movement_command(wire_command_) ? 0 : (wire_command_=="READ STATUS" ? 50 : 200)));
                 }
                 return;
               }
@@ -627,10 +628,28 @@ esphome:
                   const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
                   if(wire_command_=="READ STATUS") {
                     const uint32_t completed=millis();
-                    ESP_LOGD("gate_timing", "Status transaction=%u write_ms=%u wait_ms=%u read_ms=%u total_ms=%u matching_ack=%d",
+                    ESP_LOGD("gate_timing", "Status transaction=%u write_ms=%u wait_ms=%u read_ms=%u total_ms=%u matching_ack=%d audit_late=%d",
                              unsigned(status_transaction_), unsigned(status_write_completed_at_-status_submitted_at_),
                              unsigned(status_read_started_at_-status_write_completed_at_), unsigned(completed-status_read_started_at_),
-                             unsigned(completed-status_submitted_at_), int(write_confirmed_ && matching_ack(reply,wire_command_)));
+                             unsigned(completed-status_submitted_at_), int(write_confirmed_ && matching_ack(reply,wire_command_)), int(status_audit_pending_));
+                    if(status_read_audit_) {
+                      GateFeedback::Sample sample;
+                      const bool parsed=write_confirmed_ && matching_ack(reply,wire_command_) && GateFeedback::parse_reply(reply,sample);
+                      if(!status_audit_pending_ && !urgent_stop_) {
+                        status_early_reply_=parsed ? sample.text+","+std::to_string(sample.position) : "unmatched";
+                        status_early_at_=completed;
+                        status_audit_pending_=true;
+                        phase_=REPLY_WAIT; deadline_=status_write_completed_at_+200;
+                        return;  // The audit never feeds the early read into feedback.
+                      }
+                      if(status_audit_pending_) {
+                        const std::string later=parsed ? sample.text+","+std::to_string(sample.position) : "unmatched";
+                        ESP_LOGD("gate_audit", "Status transaction=%u early=%s late=%s gap_ms=%u changed=%d",
+                                 unsigned(status_transaction_), status_early_reply_.c_str(), later.c_str(),
+                                 unsigned(completed-status_early_at_), int(status_early_reply_!=later));
+                        status_audit_pending_=false; status_early_reply_.clear();
+                      }
+                    }
                   }
                   id(status_reply).publish_state(reply.substr(0, 250));
                   if (write_confirmed_ && matching_ack(reply, wire_command_)) {
@@ -884,6 +903,8 @@ esphome:
             uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
             uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
             uint32_t status_transaction_{0}, status_submitted_at_{0}, status_write_completed_at_{0}, status_read_started_at_{0};
+            bool status_read_audit_{false}, status_audit_pending_{false};
+            uint32_t status_early_at_{0}; std::string status_early_reply_;
             unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
             unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};
             void refresh_status_after_event() {
@@ -1009,6 +1030,7 @@ esphome:
               write_command();
             }
             void write_command(bool event_refresh=false) {
+              status_audit_pending_=false; status_early_reply_.clear();
               if(!event_refresh) { status_event_refreshes_=status_refreshes_=0; status_event_refresh_pending_=false; }
               if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
                 phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;

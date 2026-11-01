@@ -157,16 +157,46 @@ int main() {
   const auto timing_auth_reads=reads.size();
   tick(timing,300); assert(reads.size()==timing_auth_reads);
   event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
-  tick(timing,99); assert(reads.size()==timing_auth_reads);
+  tick(timing,49); assert(reads.size()==timing_auth_reads);
   tick(timing,1); assert(reads.size()==timing_auth_reads+1 && reads.back()==106);
   tick(timing,300); assert(reads.size()==timing_auth_reads+1);
   event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==2 && writes.back().payload=="C=READ STATUS;src=P9999999");
   event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
-  tick(timing,99); assert(reads.size()==timing_auth_reads+1);
+  tick(timing,49); assert(reads.size()==timing_auth_reads+1);
   tick(timing,1); assert(reads.size()==timing_auth_reads+2);
   event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
   assert(timing_parent.disconnections==0 && !gate_binary.valid);
+
+  // Optional audit withholds early feedback and waits until 200ms for a second
+  // serialized read. Only the later reply is counted/accepted as status.
+  reset(); esphome::ble_client::Parent audit_parent; EyeOpenClient audit(false,true); audit.p=&audit_parent;
+  audit.request("READ STATUS"); discover(audit); unlock_without_challenge(audit);
+  status_reply.state="untouched"; status_successes.state=0;
+  event(audit,ESP_GATTC_WRITE_CHAR_EVT,106); tick(audit,50);
+  const auto audit_reads=reads.size();
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(status_reply.state=="untouched" && status_successes.state==0);
+  tick(audit,149);assert(reads.size()==audit_reads);
+  event(audit,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==1); // Do not replace the request between paired reads.
+  tick(audit,1);assert(reads.size()==audit_reads+1);
+  tick(audit,10);assert(reads.size()==audit_reads+1);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,12");
+  assert(status_successes.state==1 && status_reply.state=="ACK STATUS:PED OPENING,12");
+  assert(audit_parent.disconnections==0);
+  // An early mismatch is compared, not used to trigger premature recovery.
+  audit.request("READ STATUS");event(audit,ESP_GATTC_WRITE_CHAR_EVT,106);tick(audit,50);
+  const auto paired_writes=writes.size();
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==paired_writes);tick(audit,150);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(writes.size()==paired_writes && status_successes.state==2);
+  // Stop still bypasses a scheduled audit read without replaying movement.
+  audit.request("READ STATUS");event(audit,ESP_GATTC_WRITE_CHAR_EVT,106);tick(audit,50);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  audit.request("STOP");tick(audit,0);
+  assert(writes.back().payload=="C=STOP;src=P9999999");
 
   // Motion cannot be written before authentication AND a baseline status reply.
   reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
@@ -685,14 +715,14 @@ int main() {
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(p35.disconnections==0);
   // No notification is needed for fresh status recovery. Refresh immediately
-  // after the completed stale read, but keep the normal 100ms response wait.
+  // after the completed stale read, but keep the normal 50ms response wait.
   reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
   tick(c36,1000);const auto original_writes=writes.size();
   acknowledge(c36,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==original_writes+1);
   const auto before_refresh_read=reads.size();tick(c36,0);
   assert(reads.size()==before_refresh_read); // No read while GATT write is outstanding.
-  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,99);assert(reads.size()==before_refresh_read);
+  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,49);assert(reads.size()==before_refresh_read);
   tick(c36,1);assert(reads.size()==before_refresh_read+1);
   event(c36,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS");
   assert(writes.size()==original_writes+2);
