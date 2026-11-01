@@ -198,6 +198,27 @@ int main() {
   audit.request("STOP");tick(audit,0);
   assert(writes.back().payload=="C=STOP;src=P9999999");
 
+  // Zero-delay audit reads immediately after confirmed write completion, never
+  // before it. A plausible old CLOSED reply cannot reach feedback before the
+  // later OPENING reply; normal mode ignores the audit-only zero override.
+  reset(); esphome::ble_client::Parent zero_parent; EyeOpenClient zero(false,true,0);zero.p=&zero_parent;
+  zero.request("READ STATUS");discover(zero);unlock_without_challenge(zero);
+  status_reply.state="unchanged";const auto zero_auth_reads=reads.size();
+  tick(zero,100);assert(reads.size()==zero_auth_reads);
+  event(zero,ESP_GATTC_WRITE_CHAR_EVT,106);tick(zero,0);
+  assert(reads.size()==zero_auth_reads+1);
+  event(zero,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(status_reply.state=="unchanged");tick(zero,199);
+  assert(reads.size()==zero_auth_reads+1);tick(zero,1);
+  assert(reads.size()==zero_auth_reads+2);
+  event(zero,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,8");
+  assert(status_reply.state=="ACK STATUS:PED OPENING,8");
+  reset();esphome::ble_client::Parent normal_wait_parent;EyeOpenClient normal_wait(false,false,0);normal_wait.p=&normal_wait_parent;
+  normal_wait.request("READ STATUS");discover(normal_wait);unlock_without_challenge(normal_wait);
+  event(normal_wait,ESP_GATTC_WRITE_CHAR_EVT,106);const auto normal_auth_reads=reads.size();
+  tick(normal_wait,49);assert(reads.size()==normal_auth_reads);
+  tick(normal_wait,1);assert(reads.size()==normal_auth_reads+1);
+
   // Motion cannot be written before authentication AND a baseline status reply.
   reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
   client.request("PED OPEN"); assert(writes.empty()); discover(client); assert(writes.empty());

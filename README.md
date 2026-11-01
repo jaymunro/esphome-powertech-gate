@@ -51,6 +51,9 @@ option enables paired-read auditing: the early result is withheld, a second read
 starts no earlier than 200ms after write completion, and only that later result
 enters feedback. This diagnostic changes transaction duration and is disabled
 by default; a difference may reflect legitimate movement rather than staleness.
+The audit-only third constructor argument selects an early-read wait from
+0–200ms. It has no effect when auditing is disabled, so diagnostic zero-delay
+trials cannot silently change the normal 50ms setting.
 Exhausted transactions retry after
 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
