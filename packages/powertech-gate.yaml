@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.20"
+    version: "0.9.0-alpha.21"
   on_boot:
     priority: -100
     then:
@@ -46,17 +46,24 @@ esphome:
             void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; baseline_armed_=false; clear_event_hint(); }
             void event(uint32_t now, const std::string &payload="") {
               const auto label=payload.substr(0,payload.find(';'));
+              if(label=="Stopped" || label=="Closing" || label=="PedClosing" ||
+                 label=="Opened" || label=="PedOpened" || label=="Closed" || label=="PedClosed")
+                recent_opening_=false;
               if(label.empty() || label=="Opening" || label=="PedOpening" || label=="Opened" ||
                  label=="PedOpened" || label=="Stopped") clear_closing_track();
               const std::string event_mode=label=="Opening" ? "car" :
                   (label=="PedOpening" && profile_.supports_pedestrian ? "pedestrian" : "");
+              const bool late_mode = recent_opening_ && physical_=="open" && mode_.empty() &&
+                  sample_phase_=="OPENING" && uint32_t(now-recent_opening_at_)<=1500 &&
+                  uint32_t(now-last_sample_)<=1500;
               if(profile_.opening_event_mode_hint && !event_mode.empty()) {
                 if((!event_mode_.empty() && event_mode_!=event_mode) ||
                    (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
                   event_conflict_=true; event_mode_.clear(); hint_pending_=false;
                 } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
-                          baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=25000 &&
-                          (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
+                          uint32_t(now-last_status_)<=25000 &&
+                          ((baseline_armed_ && physical_=="closed" &&
+                            (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) || late_mode)) {
                   event_mode_=event_mode; event_at_=now;
                 }
               }
@@ -66,6 +73,13 @@ esphome:
               // that recent candidate forward, but publish nothing until another fresh,
               // progressing read confirms it. Conflicting/old events cannot reuse it.
               bool opening_candidate=false;
+              if(late_mode && !event_mode.empty() && !event_conflict_ && event_mode_==event_mode) {
+                // Physical Open is already known. A delayed hint can classify this recent
+                // transition only after a new read progresses beyond the latest position.
+                // Preserve candidate age and physical freshness; the event publishes neither.
+                candidate_="open:"+event_mode; candidate_position_=position_;
+                pending_=true; opening_candidate=true;
+              }
               if(pending_ && !event_mode.empty() && !event_conflict_ && event_mode_==event_mode &&
                  sample_phase_=="OPENING" && uint32_t(now-last_sample_)<=1500 &&
                  uint32_t(now-candidate_at_)<=1500 &&
@@ -98,6 +112,16 @@ esphome:
                   (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
               const auto word = s.text.substr(s.text.find_last_of(' ')+1);
               sample_phase_=word;
+              if(recent_opening_ && word=="OPENING" && s.position<recent_opening_position_) {
+                event_mode_.clear(); event_conflict_=true; recent_opening_=false;
+              }
+              if(word!="OPENING" || (recent_opening_ && uint32_t(now-recent_opening_at_)>1500))
+                recent_opening_=false;
+              if(word=="OPENING" && !recent_opening_ && baseline_armed_ && valid_ &&
+                 physical_=="closed" && uint32_t(now-last_status_)<=25000) {
+                recent_opening_=true; recent_opening_at_=now;
+              }
+              if(recent_opening_) recent_opening_position_=s.position;
               const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
               // A contradictory CLOSED position must never become fresh Open feedback.
               if (word == "CLOSED" && !closed) { invalidate(); return false; }
@@ -147,7 +171,7 @@ esphome:
               if (!closed && !next_mode.empty()) hint_pending_=false;
               physical_ = closed ? "closed" : "open";
               baseline_armed_=closed;
-              if(!closed && !next_mode.empty()) event_mode_.clear();
+              if(!closed && !next_mode.empty()) { event_mode_.clear(); recent_opening_=false; }
               car_ = pedestrian_ = "unavailable";
               if (closed) car_ = pedestrian_ = "closed";
               else if (mode_ == "car" || mode_ == "pedestrian") {
@@ -210,7 +234,8 @@ esphome:
             uint32_t hint_at_{0}; bool hint_pending_{false};
             std::string event_mode_,sample_phase_;
             uint32_t event_at_{0}; int candidate_position_{-1};
-            bool baseline_armed_{false},event_conflict_{false};
+            bool baseline_armed_{false},event_conflict_{false},recent_opening_{false};
+            uint32_t recent_opening_at_{0}; int recent_opening_position_{-1};
             bool closing_seen_{false},closing_progress_{false};
             uint32_t closing_first_at_{0},closing_last_at_{0};
             int closing_first_position_{-1},closing_last_position_{-1};
@@ -219,7 +244,7 @@ esphome:
             bool linked_{false},valid_{false},synced_{false},pending_{true};
             uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
             std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};
-            void invalidate() { valid_=false; pending_=true; candidate_.clear(); clear_closing_track(); physical_=car_=pedestrian_="unavailable"; }
+            void invalidate() { recent_opening_=false; valid_=false; pending_=true; candidate_.clear(); clear_closing_track(); physical_=car_=pedestrian_="unavailable"; }
           };
           
           // Generated field options come from settings/ps19001.json.
@@ -419,6 +444,7 @@ esphome:
                 id(monitor_enabled) = false;
                 feedback_.disconnected(); publish_feedback();
                 user_command_.clear(); urgent_stop_ = false;
+                background_settings_read_=settings_yield_pending_=false;
                 this->parent()->disconnect();
                 return;
               }
@@ -445,10 +471,14 @@ esphome:
                   user_command_=command;
                   status("Command queued after the in-flight read");
                 } else status("Busy; command was not queued or sent");
+                if(background_settings_read_ && movement_command(command) &&
+                   (urgent_stop_ || !user_command_.empty())) {
+                  settings_yield_pending_=true; yield_background_settings();
+                }
                 return;
               }
               if(command=="READ FUNCTION") settings_read_retries_=0;
-              background_poll_ = false;
+              background_poll_ = false; background_settings_read_=settings_yield_pending_=false;
               last_user_request_ = millis();
               user_command_ = command; busy_ = true;
               if (authenticated_ && id(control_session)) { next_command(); return; }
@@ -479,7 +509,8 @@ esphome:
                    uint32_t(now-last_poll_)>=settings_idle_wait && id(profile_model)=="PS19001") {
                   settings_due_=false; settings_read_retries_=0;
                   next_settings_refresh_=now+300000;
-                  busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
+                  busy_=true; background_poll_=false; background_settings_read_=true;
+                  settings_yield_pending_=false; wire_command_="READ FUNCTION"; write_command(); return;
                 }
                 if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
                   status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
@@ -489,6 +520,7 @@ esphome:
                 }
                 return;
               }
+              if(yield_background_settings()) return;
               if (phase_ == SETTINGS_RETRY_WAIT && due(now,deadline_)) {
                 if(urgent_stop_) next_command();
                 else { wire_command_="READ FUNCTION"; write_command(); }
@@ -518,6 +550,7 @@ esphome:
                                      esp_ble_gattc_cb_param_t *param) override {
               if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
               if (event == ESP_GATTC_CLOSE_EVT) {
+                background_settings_read_=settings_yield_pending_=false;
                 const bool settings_active=edit_stage_!=EDIT_IDLE;
                 cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after Bluetooth loss; refresh settings; not retried" : "Bluetooth disconnected before settings write; not retried");
                 settings_due_=auto_settings_;
@@ -564,6 +597,10 @@ esphome:
                 const std::string value(reinterpret_cast<const char *>(param->notify.value),
                                         std::min(size_t(param->notify.value_len),size_t(128)));
                 feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+                if(background_settings_read_) {
+                  settings_yield_pending_=true;
+                  if(yield_background_settings()) return;
+                }
                 // A new event is a reason to leave idle UART-mismatch backoff now.
                 // It only requests status; failed requests still regain bounded backoff.
                 if(phase_==IDLE_CONNECTED) poll_failures_=0;
@@ -598,6 +635,7 @@ esphome:
                 } else if (param->write.handle == command_handle_ && phase_ == COMMAND_WRITE) {
                   if (param->write.status != ESP_GATT_OK) { fail("Command write failed; no retry scheduled"); return; }
                   write_confirmed_ = true; read_attempts_ = 0;
+                  if(yield_background_settings(true)) return;
                   // This is only an access-mode hint; fresh status still proves movement.
                   // Preserve it even if another client overwrites the UART acknowledgement.
                   if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
@@ -631,6 +669,14 @@ esphome:
                   } else fail("Authentication was not confirmed; no gate command sent");
                 } else if (param->read.handle == command_handle_ && phase_ == REPLY_READ) {
                   const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
+                  if(background_settings_read_ && wire_command_=="READ FUNCTION") {
+                    GateFeedback::Sample movement;
+                    if(GateFeedback::parse_reply(reply,movement) &&
+                       (movement.text.substr(movement.text.find_last_of(' ')+1)!="CLOSED" ||
+                        std::abs(movement.position-id(profile_closed_position))>id(profile_closed_tolerance)))
+                      settings_yield_pending_=true; // Evidence prompts a solicited status read.
+                    if(yield_background_settings(true)) return;
+                  }
                   if(wire_command_=="READ STATUS") {
                     const uint32_t completed=millis();
                     ESP_LOGD("gate_timing", "Status transaction=%u write_ms=%u wait_ms=%u read_ms=%u total_ms=%u matching_ack=%d audit_late=%d",
@@ -685,6 +731,7 @@ esphome:
                       else { feedback_.clear_command_hint(); feedback_.event(millis()); }
                       kick_poll(millis()); publish_feedback();
                     }
+                    if(finished=="READ FUNCTION") background_settings_read_=settings_yield_pending_=false;
                     wire_command_.clear();
                     status("Acknowledged: " + finished);
                     if (finished=="READ STATUS" && !user_command_.empty() && !baseline_needed_) {
@@ -837,7 +884,22 @@ esphome:
             std::string desired_option_;
             unsigned settings_read_retries_{0};
             bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false}, settings_uncertain_{false};
+            bool background_settings_read_{false},settings_yield_pending_{false};
             std::string settings_wire_;
+            bool yield_background_settings(bool operation_completed=false) {
+              if(!background_settings_read_ || !settings_yield_pending_ || wire_command_!="READ FUNCTION" ||
+                 edit_stage_!=EDIT_IDLE || settings_write_sent_ || settings_uncertain_) return false;
+              if(!operation_completed && (phase_==COMMAND_WRITE || phase_==REPLY_READ)) return false;
+              // Only discard an automatic read, never an in-flight GATT operation or save.
+              // Revisit configuration later, after status has re-established Closed.
+              background_settings_read_=settings_yield_pending_=false;
+              settings_due_=false; next_settings_refresh_=millis()+30000; settings_read_retries_=0;
+              wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+              ESP_LOGD("gate_settings", "Background settings refresh yielded; requesting fresh gate status");
+              kick_poll(millis());
+              if(urgent_stop_ || !user_command_.empty()) { busy_=true; next_command(); }
+              return true;
+            }
             uint32_t last_uart_reply_{0}, next_settings_refresh_{0};
             GateSettings edit_baseline_;
             void cancel_settings(const std::string &message) {
@@ -965,6 +1027,7 @@ esphome:
                   return;
                 }
                 const bool submitted=settings_write_sent_;
+                background_settings_read_=settings_yield_pending_=false;
                 cancel_settings(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; no configuration write sent");
                 id(settings_result).publish_state(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; refresh settings to try again");
                 settings_due_=false; next_settings_refresh_=millis()+30000;
@@ -1004,6 +1067,7 @@ esphome:
                 id(control_result).publish_state(message);
               }
               status(message); busy_ = false; user_command_.clear(); urgent_stop_ = false;
+              background_settings_read_=settings_yield_pending_=false;
               feedback_.disconnected(); publish_feedback();
               phase_ = IDLE; this->parent()->disconnect();
               // A rejected early connect may never emit CLOSE_EVT. Release only our

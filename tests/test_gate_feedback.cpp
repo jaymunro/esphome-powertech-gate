@@ -242,6 +242,39 @@ int main() {
   late.accept({"PED CLOSING",row.second},row.first);
  late.event(57846,"PedClosed");assert(!late.confirmed_closed());
  assert(late.accept({"PED CLOSED",1},58159));assert(late.confirmed_closed());
+ // Health-check race: already-confirmed unclassified movement may accept a
+ // recent delayed mode hint, but only a later progressing status classifies it.
+ for(bool pedestrian : {false,true}) {
+  auto g=closed_events();
+  assert(!g.accept({"PED OPENING",0},30867));
+  assert(g.accept({"PED OPENING",7},31486));
+  assert(g.gate()=="open" && g.car()=="unavailable" && g.pedestrian()=="unavailable");
+  g.accept({"PED OPENING",13},31995);
+  g.event(32079,pedestrian ? "PedOpening" : "Opening");
+  assert(g.gate()=="open" && g.car()=="unavailable" && !g.confirmed_closed());
+  assert(g.accept({"PED OPENING",18},32402));
+  assert(g.car()==(pedestrian ? "closed" : "opening"));
+  assert(g.pedestrian()==(pedestrian ? "opening" : "closed"));
+ }
+ // Old context, plateau, reversal, conflicting hints, disconnect and expiry
+ // cannot turn an untimestamped mode hint into confirmed access-mode feedback.
+ for(int scenario=0;scenario<7;++scenario) {
+  auto g=closed_events();g.accept({"PED OPENING",0},19000);
+  assert(g.accept({"PED OPENING",7},19600));g.accept({"PED OPENING",13},19900);
+  if(scenario==4){g.disconnected();g.connected(19950);}
+  if(scenario==5)g.accept({"PED CLOSING",12},19950);
+  if(scenario==6)g.tick(46000);
+  const uint32_t at=scenario==0 ? 20600 : (scenario==6 ? 46001 : 20000);
+  g.event(at,"Opening");if(scenario==3)g.event(at+1,"PedOpening");
+  const int pos=scenario==1 ? 13 : (scenario==2 ? 12 : 18);
+  g.accept({"PED OPENING",pos},at+400);
+  assert(g.car()!="opening" && g.pedestrian()!="opening");
+ }
+ // No recent synchronized Closed baseline: mid-travel recovery stays unclassified.
+ GateFeedback mid({"PS19001","SINGLE STOPPED",95,0,true,5,true,true});mid.connected(0);
+ mid.accept({"PED OPENING",10},16000);mid.accept({"PED OPENING",20},16600);
+ mid.event(16700,"Opening");mid.accept({"PED OPENING",30},17200);
+ assert(mid.gate()=="open" && mid.car()=="unavailable");
  // Pedestrian closing uses the same physical endpoint policy, independently of mode.
  GateFeedback fastped({"PS19001","SINGLE STOPPED",95,0,true,5,true,true});fastped.connected(0);
  fastped.accept({"SINGLE STOPPED",26},16000);fastped.accept({"SINGLE STOPPED",26},18000);

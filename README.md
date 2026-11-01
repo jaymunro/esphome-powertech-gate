@@ -133,6 +133,12 @@ than restarting its timer; stable Closed still requires fresh revalidation.
 A matching Opening/PedOpening event can also retain a pending OPENING sample
 received within 1.5 seconds. It never publishes a mode by itself: another fresh,
 progressing read is required, and conflicting hints reset confirmation.
+If status has already confirmed physical Open without an access mode, the same
+1.5-second opening context may accept a delayed mode notification. The gate must
+have started from a fresh synchronized Closed baseline; another solicited OPENING
+reply must progress beyond the latest position observed before the notification.
+The event neither changes Gate state nor renews its freshness. Expired context,
+reversal, conflicting mode hints, other movement phases and disconnect reject it.
 A fresh confirmed Gate state is retained while notifications or new candidate
 samples are checked, instead of flashing Unknown during each transition. These
 checks never extend the 25-second freshness timeout. Configuration writes stay
@@ -201,7 +207,16 @@ exhausted configuration-read attempt is scheduled again after 30 seconds, with
 the same confirmed-Closed/idle guard. No monitoring switch or manual refresh button is
 published to Home Assistant. **Settings update result** explains validation,
 rejected edits and uncertain outcomes. Settings retain their last validated
-values during loss of feedback; they are not a continuous settings stream. The original 18 read-only sensor entities are replaced by
+values during loss of feedback; they are not a continuous settings stream.
+
+Automatic background refreshes yield to controller notifications, queued movement
+commands, or movement-status content encountered in a shared reply. An outstanding
+GATT write/read finishes first; no further configuration reread is started. Status
+polling resumes and configuration is reconsidered after 30 seconds, once Closed
+is confirmed. Manual reads, active setting saves and uncertain-save verification
+are not discarded by this background scheduling rule.
+
+The original 18 read-only sensor entities are replaced by
 `select.*` entities with the same names; Auto-closing keeps its existing select.
 Update any consumers of the old `sensor.*` settings entities during migration.
 Covers, Gate state, Bluetooth connection and unrelated entity IDs are unchanged.

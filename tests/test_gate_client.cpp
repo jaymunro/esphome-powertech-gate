@@ -556,6 +556,58 @@ int main() {
   reset(); esphome::ble_client::Parent p21; EyeOpenClient c21(false); c21.p=&p21; ready(c21);
   c21.request_auto_close(2); tick(c21,250); acknowledge(c21,base+";future=keep"); tick(c21,250);
   assert(settings_write_count()==0 && settings_result.state.find("unknown extension")!=std::string::npos);
+  // An automatic configuration refresh yields to a movement event at a safe
+  // GATT boundary, never while a write/read is outstanding. No save is involved.
+  for(int stage=0;stage<4;++stage) {
+    reset();esphome::ble_client::Parent yp;EyeOpenClient y;y.p=&yp;ready(y);tick(y,250);
+    assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+    if(stage>=1)event(y,ESP_GATTC_WRITE_CHAR_EVT,106);
+    if(stage>=2)tick(y,600);
+    if(stage==3) {
+      event(y,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");
+      for(int i=0;i<4;++i){tick(y,500);event(y,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+    }
+    const auto yw=writes.size(),yr=reads.size();
+    event(y,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(y,0);
+    if(stage==0 || stage==2) {
+      assert(writes.size()==yw && reads.size()==yr);
+      if(stage==0)event(y,ESP_GATTC_WRITE_CHAR_EVT,106);
+      else event(y,ESP_GATTC_READ_CHAR_EVT,106,base);
+      tick(y,0);
+    }
+    assert(writes.size()==yw+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
+    acknowledge(y,"ACK STATUS:PED OPENING,4");tick(y,500);acknowledge(y,"ACK STATUS:PED OPENING,12");
+    assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
+    assert(settings_write_count()==0 && yp.disconnections==0);
+  }
+  // Movement in an overwritten configuration reply also yields, but that
+  // unsolicited reply is not accepted as physical proof. Request status first.
+  reset();esphome::ble_client::Parent yp2;EyeOpenClient y2;y2.p=&yp2;ready(y2);tick(y2,250);
+  acknowledge(y2,"ACK STATUS:PED OPENING,15");
+  assert(gate_binary.valid && !gate_binary.state);tick(y2,0);
+  assert(writes.back().payload=="C=READ STATUS;src=P9999999" && settings_write_count()==0);
+  acknowledge(y2,"ACK STATUS:PED OPENING,15");tick(y2,500);acknowledge(y2,"ACK STATUS:PED OPENING,25");
+  tick(y2,30000);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(y2,"ACK STATUS:PED CLOSED,0");tick(y2,1000);acknowledge(y2,"ACK STATUS:PED CLOSED,0");
+  tick(y2,500);assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(y2,base);assert(settings_result.state=="Configuration read and validated");
+  // A queued motion command yields the automatic read after its outstanding
+  // write completes, without a configuration read or motion retransmission.
+  reset();esphome::ble_client::Parent yp3;EyeOpenClient y3;y3.p=&yp3;ready(y3);tick(y3,250);
+  const auto qyw=writes.size(),qyr=reads.size();y3.request("FULL OPEN");tick(y3,0);
+  assert(writes.size()==qyw && reads.size()==qyr);
+  event(y3,ESP_GATTC_WRITE_CHAR_EVT,106);
+  assert(writes.size()==qyw+1 && writes.back().payload=="C=FULL OPEN;src=P9999999");
+  assert(reads.size()==qyr && settings_write_count()==0);
+  y3.request("PED OPEN");assert(writes.size()==qyw+1); // Still busy; no overlapping command.
+  // Manual settings reads are not marked as automatic background work.
+  reset();esphome::ble_client::Parent yp4;EyeOpenClient y4(false);y4.p=&yp4;ready(y4);
+  y4.request("READ FUNCTION");tick(y4,250);event(y4,ESP_GATTC_WRITE_CHAR_EVT,106);
+  const auto manual_writes=writes.size();event(y4,ESP_GATTC_NOTIFY_EVT,42,"Opening");tick(y4,0);
+  assert(writes.size()==manual_writes);tick(y4,600);
+  event(y4,ESP_GATTC_READ_CHAR_EVT,106,base);
+  assert(settings_result.state=="Configuration read and validated");
+
   // Automatic post-connect refresh is read-only and follows confirmed status.
   reset(); esphome::ble_client::Parent p22; EyeOpenClient c22; c22.p=&p22; ready(c22);
   const auto before_due_settings=writes.size();tick(c22,249);assert(writes.size()==before_due_settings);
