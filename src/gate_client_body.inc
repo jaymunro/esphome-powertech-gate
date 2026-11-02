@@ -1,7 +1,9 @@
 // Embedded in the private ESPHome on_boot lambda. No credentials in this file.
 class EyeOpenClient : public esphome::ble_client::BLEClientNode {
  public:
-  explicit EyeOpenClient(bool auto_settings=true) {
+  explicit EyeOpenClient(bool auto_settings=true, bool status_read_audit=false, uint32_t audit_wait_ms=50) {
+    status_read_audit_=status_read_audit;
+    status_first_read_wait_=status_read_audit ? std::min(audit_wait_ms,uint32_t(200)) : 0;
     auto_settings_=auto_settings; settings_due_=auto_settings;
     next_reconnect_=millis(); next_settings_refresh_=millis();
     this->node_state = esphome::esp32_ble_tracker::ClientState::IDLE;
@@ -10,7 +12,15 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       id(profile_closed_tolerance), id(profile_opening_event_mode_hint), id(profile_single_closed_after_tracked_closing)});
   }
 
+  void dump_link_diagnostics() {
+    ESP_LOGD("gate_link_retained", "Retained link events=%u; current phase=%d, status failures=%u",
+             unsigned(link_events_.size()),int(phase_),poll_failures_);
+    for(const auto &entry:link_events_)
+      ESP_LOGD("gate_link_retained", "age_ms=%u %s",unsigned(millis()-entry.first),entry.second.c_str());
+    next_link_dump_=millis()+60000;
+  }
   void maintenance() {
+    if(!link_events_.empty() && due(millis(),next_link_dump_)) dump_link_diagnostics();
     // ESPHome disables its idle BLE-client loop. Keep our connection deadline
     // alive independently, including when a connection produced no GATT event.
     if(id(control_session)) loop();
@@ -49,6 +59,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       id(monitor_enabled) = false;
       feedback_.disconnected(); publish_feedback();
       user_command_.clear(); urgent_stop_ = false;
+      background_settings_read_=settings_yield_pending_=false;
       this->parent()->disconnect();
       return;
     }
@@ -75,10 +86,14 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         user_command_=command;
         status("Command queued after the in-flight read");
       } else status("Busy; command was not queued or sent");
+      if(background_settings_read_ && movement_command(command) &&
+         (urgent_stop_ || !user_command_.empty())) {
+        settings_yield_pending_=true; yield_background_settings();
+      }
       return;
     }
     if(command=="READ FUNCTION") settings_read_retries_=0;
-    background_poll_ = false;
+    background_poll_ = false; background_settings_read_=settings_yield_pending_=false;
     last_user_request_ = millis();
     user_command_ = command; busy_ = true;
     if (authenticated_ && id(control_session)) { next_command(); return; }
@@ -102,11 +117,15 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     feedback_.tick(now); publish_feedback();
     if (phase_ == IDLE_CONNECTED) {
       if(auto_settings_ && due(now,next_settings_refresh_)) settings_due_=true;
+      // A due settings read must win the Closed-idle poll boundary; waiting
+      // 500ms unconditionally would starve it when status polls every250ms.
+      const uint32_t settings_idle_wait=fast_window_ ? 500 : 250;
       if(settings_due_ && edit_stage_==EDIT_IDLE && feedback_.confirmed_closed() &&
-         uint32_t(now-last_poll_)>=500 && id(profile_model)=="PS19001") {
+         uint32_t(now-last_poll_)>=settings_idle_wait && id(profile_model)=="PS19001") {
         settings_due_=false; settings_read_retries_=0;
         next_settings_refresh_=now+300000;
-        busy_=true; background_poll_=false; wire_command_="READ FUNCTION"; write_command(); return;
+        busy_=true; background_poll_=false; background_settings_read_=true;
+        settings_yield_pending_=false; wire_command_="READ FUNCTION"; write_command(); return;
       }
       if (!id(monitor_enabled) && uint32_t(now - last_user_request_) >= 120000) {
         status("Test session ended; disconnecting"); this->parent()->disconnect(); return;
@@ -116,6 +135,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       }
       return;
     }
+    if(yield_background_settings()) return;
     if (phase_ == SETTINGS_RETRY_WAIT && due(now,deadline_)) {
       if(urgent_stop_) next_command();
       else { wire_command_="READ FUNCTION"; write_command(); }
@@ -132,6 +152,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     }
     if (phase_ == REPLY_WAIT && due(now, deadline_)) {
       phase_ = REPLY_READ; deadline_ = now + 3000;
+      if(wire_command_=="READ STATUS") status_read_started_at_=now;
       const auto err = esp_ble_gattc_read_char(this->parent()->get_gattc_if(),
           this->parent()->get_conn_id(), command_handle_, ESP_GATT_AUTH_REQ_NONE);
       if (err != ESP_OK) fail("Could not request UART reply; command not retried");
@@ -144,6 +165,8 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
                            esp_ble_gattc_cb_param_t *param) override {
     if (event == ESP_GATTC_CONNECT_EVT) { id(bluetooth_connection).publish_state(true); }
     if (event == ESP_GATTC_CLOSE_EVT) {
+      remember_link_event("close reason="+std::to_string(int(param->close.reason)));
+      background_settings_read_=settings_yield_pending_=false;
       const bool settings_active=edit_stage_!=EDIT_IDLE;
       cancel_settings(settings_write_sent_ ? "Settings outcome uncertain after Bluetooth loss; refresh settings; not retried" : "Bluetooth disconnected before settings write; not retried");
       settings_due_=auto_settings_;
@@ -190,12 +213,16 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       const std::string value(reinterpret_cast<const char *>(param->notify.value),
                               std::min(size_t(param->notify.value_len),size_t(128)));
       feedback_.event(millis(),value); kick_poll(millis()); publish_feedback();
+      if(background_settings_read_) {
+        settings_yield_pending_=true;
+        if(yield_background_settings()) return;
+      }
       // A new event is a reason to leave idle UART-mismatch backoff now.
       // It only requests status; failed requests still regain bounded backoff.
       if(phase_==IDLE_CONNECTED) poll_failures_=0;
       // Refresh the UART request rather than rereading an overwritten buffer.
       // Never overlap an outstanding GATT write/read or resend a motion command.
-      if(wire_command_=="READ STATUS" && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
+      if(wire_command_=="READ STATUS" && !status_audit_pending_ && !urgent_stop_ && user_command_.empty() && status_event_refreshes_<1 && status_refreshes_<2 &&
          (phase_==REPLY_WAIT || phase_==REPLY_READ)) {
         status_event_refresh_pending_=true;
         if(phase_==REPLY_WAIT) refresh_status_after_event();
@@ -224,13 +251,16 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       } else if (param->write.handle == command_handle_ && phase_ == COMMAND_WRITE) {
         if (param->write.status != ESP_GATT_OK) { fail("Command write failed; no retry scheduled"); return; }
         write_confirmed_ = true; read_attempts_ = 0;
+        if(yield_background_settings(true)) return;
         // This is only an access-mode hint; fresh status still proves movement.
         // Preserve it even if another client overwrites the UART acknowledgement.
         if (wire_command_=="PED OPEN" || wire_command_=="FULL OPEN")
           feedback_.commanded_open(wire_command_=="PED OPEN",millis());
         if (movement_command(wire_command_)) motion_ack_deadline_=millis()+2000;
+        if(wire_command_=="READ STATUS") status_write_completed_at_=millis();
         phase_ = REPLY_WAIT;
-        deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 : (movement_command(wire_command_) ? 0 : 200));
+        deadline_ = millis() + (wire_command_=="READ FUNCTION" ? 600 :
+            (movement_command(wire_command_) ? 0 : (wire_command_=="READ STATUS" ? status_first_read_wait_ : 200)));
       }
       return;
     }
@@ -255,6 +285,39 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         } else fail("Authentication was not confirmed; no gate command sent");
       } else if (param->read.handle == command_handle_ && phase_ == REPLY_READ) {
         const auto reply = value.rfind("C=", 0) == 0 ? value.substr(2) : value;
+        if(background_settings_read_ && wire_command_=="READ FUNCTION") {
+          GateFeedback::Sample movement;
+          if(GateFeedback::parse_reply(reply,movement) &&
+             (movement.text.substr(movement.text.find_last_of(' ')+1)!="CLOSED" ||
+              std::abs(movement.position-id(profile_closed_position))>id(profile_closed_tolerance)))
+            settings_yield_pending_=true; // Evidence prompts a solicited status read.
+          if(yield_background_settings(true)) return;
+        }
+        if(wire_command_=="READ STATUS") {
+          const uint32_t completed=millis();
+          ESP_LOGD("gate_timing", "Status transaction=%u write_ms=%u wait_ms=%u read_ms=%u total_ms=%u matching_ack=%d audit_late=%d",
+                   unsigned(status_transaction_), unsigned(status_write_completed_at_-status_submitted_at_),
+                   unsigned(status_read_started_at_-status_write_completed_at_), unsigned(completed-status_read_started_at_),
+                   unsigned(completed-status_submitted_at_), int(write_confirmed_ && matching_ack(reply,wire_command_)), int(status_audit_pending_));
+          if(status_read_audit_) {
+            GateFeedback::Sample sample;
+            const bool parsed=write_confirmed_ && matching_ack(reply,wire_command_) && GateFeedback::parse_reply(reply,sample);
+            if(!status_audit_pending_ && !urgent_stop_) {
+              status_early_reply_=parsed ? sample.text+","+std::to_string(sample.position) : "unmatched";
+              status_early_at_=completed;
+              status_audit_pending_=true;
+              phase_=REPLY_WAIT; deadline_=status_write_completed_at_+200;
+              return;  // The audit never feeds the early read into feedback.
+            }
+            if(status_audit_pending_) {
+              const std::string later=parsed ? sample.text+","+std::to_string(sample.position) : "unmatched";
+              ESP_LOGD("gate_audit", "Status transaction=%u early=%s late=%s gap_ms=%u changed=%d",
+                       unsigned(status_transaction_), status_early_reply_.c_str(), later.c_str(),
+                       unsigned(completed-status_early_at_), int(status_early_reply_!=later));
+              status_audit_pending_=false; status_early_reply_.clear();
+            }
+          }
+        }
         id(status_reply).publish_state(reply.substr(0, 250));
         if (write_confirmed_ && matching_ack(reply, wire_command_)) {
           last_uart_reply_=millis();
@@ -284,6 +347,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
             else { feedback_.clear_command_hint(); feedback_.event(millis()); }
             kick_poll(millis()); publish_feedback();
           }
+          if(finished=="READ FUNCTION") background_settings_read_=settings_yield_pending_=false;
           wire_command_.clear();
           status("Acknowledged: " + finished);
           if (finished=="READ STATUS" && !user_command_.empty() && !baseline_needed_) {
@@ -429,6 +493,17 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     AUTH_WRITE, AUTH_VERIFY_WAIT, AUTH_VERIFY_READ, COMMAND_WAIT,
     COMMAND_WRITE, REPLY_WAIT, REPLY_READ, IDLE_CONNECTED, QUIET_WAIT, SETTINGS_RETRY_WAIT };
   Phase phase_{IDLE};
+  std::vector<std::pair<uint32_t,std::string>> link_events_;
+  uint32_t next_link_dump_{0};
+  void remember_link_event(const std::string &message) {
+    const std::string operation=wire_command_=="READ STATUS" ? "status" :
+        (wire_command_=="READ FUNCTION" ? "settings-read" :
+         (wire_command_.rfind("WRITE FUNCTION",0)==0 ? "settings-write" :
+          (movement_command(wire_command_) ? "motion" : "session")));
+    if(link_events_.size()==4) link_events_.erase(link_events_.begin());
+    link_events_.push_back({millis(),message+" phase="+std::to_string(int(phase_))+" op="+operation});
+    next_link_dump_=millis();
+  }
   GateFeedback feedback_;
   enum EditStage { EDIT_IDLE, EDIT_BASELINE, EDIT_WRITE, EDIT_VERIFY };
   EditStage edit_stage_{EDIT_IDLE};
@@ -436,7 +511,22 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   std::string desired_option_;
   unsigned settings_read_retries_{0};
   bool auto_settings_{true}, settings_due_{false}, settings_write_sent_{false}, settings_uncertain_{false};
+  bool background_settings_read_{false},settings_yield_pending_{false};
   std::string settings_wire_;
+  bool yield_background_settings(bool operation_completed=false) {
+    if(!background_settings_read_ || !settings_yield_pending_ || wire_command_!="READ FUNCTION" ||
+       edit_stage_!=EDIT_IDLE || settings_write_sent_ || settings_uncertain_) return false;
+    if(!operation_completed && (phase_==COMMAND_WRITE || phase_==REPLY_READ)) return false;
+    // Only discard an automatic read, never an in-flight GATT operation or save.
+    // Revisit configuration later, after status has re-established Closed.
+    background_settings_read_=settings_yield_pending_=false;
+    settings_due_=false; next_settings_refresh_=millis()+30000; settings_read_retries_=0;
+    wire_command_.clear(); busy_=false; phase_=IDLE_CONNECTED;
+    ESP_LOGD("gate_settings", "Background settings refresh yielded; requesting fresh gate status");
+    kick_poll(millis());
+    if(urgent_stop_ || !user_command_.empty()) { busy_=true; next_command(); }
+    return true;
+  }
   uint32_t last_uart_reply_{0}, next_settings_refresh_{0};
   GateSettings edit_baseline_;
   void cancel_settings(const std::string &message) {
@@ -506,6 +596,10 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   bool baseline_needed_{false}, write_confirmed_{false}, background_poll_{false};
   uint16_t auth_handle_{0}, command_handle_{0}, result_handle_{0};
   uint32_t deadline_{0}, last_user_request_{0}, last_poll_{0}, motion_ack_deadline_{0};
+  uint32_t status_transaction_{0}, status_submitted_at_{0}, status_write_completed_at_{0}, status_read_started_at_{0};
+  bool status_read_audit_{false}, status_audit_pending_{false};
+  uint32_t status_first_read_wait_{0};
+  uint32_t status_early_at_{0}; std::string status_early_reply_;
   unsigned read_attempts_{0}, poll_failures_{0}, status_successes_{0}, unmatched_replies_{0};
   unsigned status_event_refreshes_{0},status_refreshes_{0}; bool status_event_refresh_pending_{false};
   void refresh_status_after_event() {
@@ -519,7 +613,12 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
   uint32_t poll_delay(uint32_t now) {
     if (poll_failures_) return poll_interval_;
     if (fast_window_ && due(now,fast_until_)) fast_window_=false;
-    return (!feedback_.available() || feedback_.gate() != "closed" || fast_window_) ? 150 : 1000;
+    // Listen first after confirmed Closed. A notification/command sets status_due_
+    // and wakes status reads immediately; a 10s health read covers missed events
+    // without extending the 25s feedback freshness limit.
+    if(!feedback_.available() || feedback_.gate() != "closed" || feedback_.confirming())
+      return feedback_.confirming() ? 150 : 0;
+    return 10000;
   }
   std::string status_text_;
   std::string user_command_, wire_command_, challenge_;
@@ -555,6 +654,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
         return;
       }
       const bool submitted=settings_write_sent_;
+      background_settings_read_=settings_yield_pending_=false;
       cancel_settings(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; no configuration write sent");
       id(settings_result).publish_state(submitted ? "Settings outcome uncertain; refresh to verify; write not retried" : "Settings read did not match; refresh settings to try again");
       settings_due_=false; next_settings_refresh_=millis()+30000;
@@ -583,6 +683,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       }
       phase_ = IDLE_CONNECTED; return;
     }
+    remember_link_event("failure="+message);
     ESP_LOGW("gate_link", "Operation failed: %s (phase=%d)", message.c_str(), int(phase_));
     next_reconnect_ = millis() + reconnect_delay_;
     reconnect_delay_ = std::min(uint32_t(120000), reconnect_delay_ * 2);
@@ -594,6 +695,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       id(control_result).publish_state(message);
     }
     status(message); busy_ = false; user_command_.clear(); urgent_stop_ = false;
+    background_settings_read_=settings_yield_pending_=false;
     feedback_.disconnected(); publish_feedback();
     phase_ = IDLE; this->parent()->disconnect();
     // A rejected early connect may never emit CLOSE_EVT. Release only our
@@ -631,6 +733,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
     write_command();
   }
   void write_command(bool event_refresh=false) {
+    status_audit_pending_=false; status_early_reply_.clear();
     if(!event_refresh) { status_event_refreshes_=status_refreshes_=0; status_event_refresh_pending_=false; }
     if((wire_command_=="READ FUNCTION" || wire_command_.rfind("WRITE FUNCTION,",0)==0) && uint32_t(millis()-last_uart_reply_)<250) {
       phase_=QUIET_WAIT; deadline_=last_uart_reply_+250; return;
@@ -644,6 +747,7 @@ class EyeOpenClient : public esphome::ble_client::BLEClientNode {
       id(settings_result).publish_state("Saving setting; waiting for acknowledgement");
     }
     phase_ = COMMAND_WRITE; deadline_ = millis() + 4000; write_confirmed_ = false;
+    if(wire_command_=="READ STATUS") { ++status_transaction_; status_submitted_at_=millis(); }
     status("Sending: " + wire_command_);
     if (wire_command_ == "READ STATUS") { status_due_=false; id(poll_health).publish_state("Requesting status"); }
     else id(control_result).publish_state("Sending: " + wire_command_);

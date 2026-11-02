@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdarg>
 #include <functional>
 #include <string>
 #include <vector>
@@ -13,7 +14,11 @@ using esp_err_t = int; using esp_gatt_if_t = int;
 constexpr int ESP_OK=0, ESP_GATT_OK=0, ESP_GATT_AUTH_REQ_NONE=0, ESP_GATT_WRITE_TYPE_RSP=0, ESP_GATT_IF_NONE=255;
 enum esp_gattc_cb_event_t { ESP_GATTC_CONNECT_EVT, ESP_GATTC_CLOSE_EVT, ESP_GATTC_SEARCH_CMPL_EVT,
   ESP_GATTC_REG_FOR_NOTIFY_EVT, ESP_GATTC_NOTIFY_EVT, ESP_GATTC_WRITE_CHAR_EVT, ESP_GATTC_READ_CHAR_EVT };
-void test_log(const char *, const char *, ...) {}
+std::vector<std::string> log_lines;
+void test_log(const char *, const char *format, ...) {
+ char buffer[512];va_list args;va_start(args,format);vsnprintf(buffer,sizeof(buffer),format,args);va_end(args);
+ log_lines.emplace_back(buffer);
+}
 #define ESP_LOGW test_log
 #define ESP_LOGD test_log
 struct esp_ble_gattc_cb_param_t {
@@ -149,6 +154,72 @@ int main() {
   assert(!EyeOpenClient::url_decode("bad%2",out));
   assert(EyeOpenClient::integer_field("XC=1;C=45057;R=0","C")==45057);
   assert(EyeOpenClient::integer_field("C=99999999999999","C")==-1);
+
+  // The status first-read wait starts at confirmed write completion, not submission.
+  // No early/concurrent reads; an unrelated reply still gets a fresh bounded request.
+  reset(); esphome::ble_client::Parent timing_parent; EyeOpenClient timing(false); timing.p=&timing_parent;
+  timing.request("READ STATUS"); discover(timing); unlock_without_challenge(timing);
+  const auto timing_auth_reads=reads.size();
+  tick(timing,300); assert(reads.size()==timing_auth_reads);
+  event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(timing,0); assert(reads.size()==timing_auth_reads+1 && reads.back()==106);
+  tick(timing,300); assert(reads.size()==timing_auth_reads+1);
+  event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==2 && writes.back().payload=="C=READ STATUS;src=P9999999");
+  event(timing,ESP_GATTC_WRITE_CHAR_EVT,106);
+  tick(timing,0); assert(reads.size()==timing_auth_reads+2);
+  event(timing,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(timing_parent.disconnections==0 && !gate_binary.valid);
+
+  // Optional audit withholds early feedback and waits until 200ms for a second
+  // serialized read. Only the later reply is counted/accepted as status.
+  reset(); esphome::ble_client::Parent audit_parent; EyeOpenClient audit(false,true); audit.p=&audit_parent;
+  audit.request("READ STATUS"); discover(audit); unlock_without_challenge(audit);
+  status_reply.state="untouched"; status_successes.state=0;
+  event(audit,ESP_GATTC_WRITE_CHAR_EVT,106); tick(audit,50);
+  const auto audit_reads=reads.size();
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(status_reply.state=="untouched" && status_successes.state==0);
+  tick(audit,149);assert(reads.size()==audit_reads);
+  event(audit,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==1); // Do not replace the request between paired reads.
+  tick(audit,1);assert(reads.size()==audit_reads+1);
+  tick(audit,10);assert(reads.size()==audit_reads+1);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,12");
+  assert(status_successes.state==1 && status_reply.state=="ACK STATUS:PED OPENING,12");
+  assert(audit_parent.disconnections==0);
+  // An early mismatch is compared, not used to trigger premature recovery.
+  audit.request("READ STATUS");event(audit,ESP_GATTC_WRITE_CHAR_EVT,106);tick(audit,50);
+  const auto paired_writes=writes.size();
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ LIGHT STATUS");
+  assert(writes.size()==paired_writes);tick(audit,150);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(writes.size()==paired_writes && status_successes.state==2);
+  // Stop still bypasses a scheduled audit read without replaying movement.
+  audit.request("READ STATUS");event(audit,ESP_GATTC_WRITE_CHAR_EVT,106);tick(audit,50);
+  event(audit,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  audit.request("STOP");tick(audit,0);
+  assert(writes.back().payload=="C=STOP;src=P9999999");
+
+  // Zero-delay audit reads immediately after confirmed write completion, never
+  // before it. A plausible old CLOSED reply cannot reach feedback before the
+  // later OPENING reply; normal mode ignores a nonzero audit override.
+  reset(); esphome::ble_client::Parent zero_parent; EyeOpenClient zero(false,true,0);zero.p=&zero_parent;
+  zero.request("READ STATUS");discover(zero);unlock_without_challenge(zero);
+  status_reply.state="unchanged";const auto zero_auth_reads=reads.size();
+  tick(zero,100);assert(reads.size()==zero_auth_reads);
+  event(zero,ESP_GATTC_WRITE_CHAR_EVT,106);tick(zero,0);
+  assert(reads.size()==zero_auth_reads+1);
+  event(zero,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED CLOSED,0");
+  assert(status_reply.state=="unchanged");tick(zero,199);
+  assert(reads.size()==zero_auth_reads+1);tick(zero,1);
+  assert(reads.size()==zero_auth_reads+2);
+  event(zero,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,8");
+  assert(status_reply.state=="ACK STATUS:PED OPENING,8");
+  reset();esphome::ble_client::Parent normal_wait_parent;EyeOpenClient normal_wait(false,false,150);normal_wait.p=&normal_wait_parent;
+  normal_wait.request("READ STATUS");discover(normal_wait);unlock_without_challenge(normal_wait);
+  event(normal_wait,ESP_GATTC_WRITE_CHAR_EVT,106);const auto normal_auth_reads=reads.size();
+  tick(normal_wait,0);assert(reads.size()==normal_auth_reads+1);
 
   // Motion cannot be written before authentication AND a baseline status reply.
   reset(); esphome::ble_client::Parent parent; EyeOpenClient client(false); client.p=&parent;
@@ -321,12 +392,42 @@ int main() {
   clock_ms=16000; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   clock_ms+=1200; c12.request("READ STATUS"); acknowledge(c12,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && car_cover.position==0 && ped_cover.position==0);
-  // Closed polling is 1s; notifications prompt a read without overlapping GATT requests.
+  // Preserve the confirmation cadence: at a 392ms transport round trip, a zero
+  // gap would return a second sample at392ms, inside the unchanged500ms guard.
+  // Keep150ms while pending, then poll immediately after confirmation.
+  reset();esphome::ble_client::Parent cadence_parent;EyeOpenClient cadence(false);cadence.p=&cadence_parent;ready(cadence);
+  event(cadence,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(cadence,0);
+  acknowledge(cadence,"ACK STATUS:PED OPENING,4");
+  const auto pending_writes=writes.size();tick(cadence,149);assert(writes.size()==pending_writes);
+  tick(cadence,1);assert(writes.size()==pending_writes+1);
+  tick(cadence,250);event(cadence,ESP_GATTC_WRITE_CHAR_EVT,106);tick(cadence,0);
+  const auto pending_reads=reads.size();tick(cadence,142);assert(reads.size()==pending_reads);
+  event(cadence,ESP_GATTC_READ_CHAR_EVT,106,"ACK STATUS:PED OPENING,12");
+  assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && gate_binary.valid);
+  const auto confirmed_writes=writes.size();tick(cadence,0);assert(writes.size()==confirmed_writes+1);
+  // Immediate scheduling must still serialize the outstanding transaction.
+  tick(cadence,0);assert(writes.size()==confirmed_writes+1);
+
+  // Idle listening keeps fresh Closed without traffic, then an unsolicited
+  // event starts a read on the next loop, long before the10s health deadline.
+  reset();esphome::ble_client::Parent listen_parent;EyeOpenClient listener(false);listener.p=&listen_parent;ready(listener);
+  const auto quiet_writes=writes.size();tick(listener,1000);
+  assert(writes.size()==quiet_writes && gate_binary.valid && !gate_binary.state);
+  event(listener,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
+  assert(writes.size()==quiet_writes); // Event is a wakeup, not physical proof.
+  assert(gate_binary.valid && !gate_binary.state);
+  tick(listener,0);assert(writes.size()==quiet_writes+1);
+  tick(listener,0);assert(writes.size()==quiet_writes+1); // No overlapping GATT.
+  acknowledge(listener,"ACK STATUS:PED OPENING,4");tick(listener,500);
+  acknowledge(listener,"ACK STATUS:PED OPENING,12");
+  assert(car_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING && gate_binary.state);
+
+  // Listening-first Closed health checks are10s; notifications wake reads immediately.
   reset(); esphome::ble_client::Parent p14; EyeOpenClient c14(false); c14.p=&p14;
   c14.request("READ STATUS"); discover(c14); unlock_without_challenge(c14); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms=16000; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
   clock_ms+=1200; c14.request("READ STATUS"); acknowledge(c14,"ACK STATUS:PED CLOSED,0");
-  const auto idle_writes=writes.size(); tick(c14,999); assert(writes.size()==idle_writes);
+  const auto idle_writes=writes.size(); tick(c14,9999); assert(writes.size()==idle_writes);
   tick(c14,1); assert(writes.size()==idle_writes+1);
   event(c14,ESP_GATTC_NOTIFY_EVT,42,"PedOpening"); tick(c14,0); assert(writes.size()==idle_writes+1);
   acknowledge(c14,"ACK STATUS:PED CLOSED,0"); tick(c14,0);
@@ -375,6 +476,12 @@ int main() {
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1"); assert(!gate_binary.valid);
   tick(c14,500); acknowledge(c14,"ACK STATUS:PED CLOSED,1");
   assert(gate_binary.valid && !gate_binary.state && ped_cover.position==0 && car_cover.position==0);
+
+  // Confirmed closure returns to quiet listening immediately, even following
+  // recent notifications, without keeping the former30s fast window alive.
+  const auto closed_again_writes=writes.size();tick(c14,9999);
+  assert(writes.size()==closed_again_writes && gate_binary.valid && !gate_binary.state);
+  tick(c14,1);assert(writes.size()==closed_again_writes+1);
 
   // The software lock is checked again after a command queued behind a poll.
   reset(); esphome::ble_client::Parent p15; EyeOpenClient c15(false); c15.p=&p15;
@@ -454,9 +561,62 @@ int main() {
   reset(); esphome::ble_client::Parent p21; EyeOpenClient c21(false); c21.p=&p21; ready(c21);
   c21.request_auto_close(2); tick(c21,250); acknowledge(c21,base+";future=keep"); tick(c21,250);
   assert(settings_write_count()==0 && settings_result.state.find("unknown extension")!=std::string::npos);
+  // An automatic configuration refresh yields to a movement event at a safe
+  // GATT boundary, never while a write/read is outstanding. No save is involved.
+  for(int stage=0;stage<4;++stage) {
+    reset();esphome::ble_client::Parent yp;EyeOpenClient y;y.p=&yp;ready(y);tick(y,250);
+    assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+    if(stage>=1)event(y,ESP_GATTC_WRITE_CHAR_EVT,106);
+    if(stage>=2)tick(y,600);
+    if(stage==3) {
+      event(y,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");
+      for(int i=0;i<4;++i){tick(y,500);event(y,ESP_GATTC_READ_CHAR_EVT,106,"unrelated");}
+    }
+    const auto yw=writes.size(),yr=reads.size();
+    event(y,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(y,0);
+    if(stage==0 || stage==2) {
+      assert(writes.size()==yw && reads.size()==yr);
+      if(stage==0)event(y,ESP_GATTC_WRITE_CHAR_EVT,106);
+      else event(y,ESP_GATTC_READ_CHAR_EVT,106,base);
+      tick(y,0);
+    }
+    assert(writes.size()==yw+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
+    acknowledge(y,"ACK STATUS:PED OPENING,4");tick(y,500);acknowledge(y,"ACK STATUS:PED OPENING,12");
+    assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
+    assert(settings_write_count()==0 && yp.disconnections==0);
+  }
+  // Movement in an overwritten configuration reply also yields, but that
+  // unsolicited reply is not accepted as physical proof. Request status first.
+  reset();esphome::ble_client::Parent yp2;EyeOpenClient y2;y2.p=&yp2;ready(y2);tick(y2,250);
+  acknowledge(y2,"ACK STATUS:PED OPENING,15");
+  assert(gate_binary.valid && !gate_binary.state);tick(y2,0);
+  assert(writes.back().payload=="C=READ STATUS;src=P9999999" && settings_write_count()==0);
+  acknowledge(y2,"ACK STATUS:PED OPENING,15");tick(y2,500);acknowledge(y2,"ACK STATUS:PED OPENING,25");
+  tick(y2,30000);assert(writes.back().payload=="C=READ STATUS;src=P9999999");
+  acknowledge(y2,"ACK STATUS:PED CLOSED,0");tick(y2,1000);acknowledge(y2,"ACK STATUS:PED CLOSED,0");
+  tick(y2,500);assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  acknowledge(y2,base);assert(settings_result.state=="Configuration read and validated");
+  // A queued motion command yields the automatic read after its outstanding
+  // write completes, without a configuration read or motion retransmission.
+  reset();esphome::ble_client::Parent yp3;EyeOpenClient y3;y3.p=&yp3;ready(y3);tick(y3,250);
+  const auto qyw=writes.size(),qyr=reads.size();y3.request("FULL OPEN");tick(y3,0);
+  assert(writes.size()==qyw && reads.size()==qyr);
+  event(y3,ESP_GATTC_WRITE_CHAR_EVT,106);
+  assert(writes.size()==qyw+1 && writes.back().payload=="C=FULL OPEN;src=P9999999");
+  assert(reads.size()==qyr && settings_write_count()==0);
+  y3.request("PED OPEN");assert(writes.size()==qyw+1); // Still busy; no overlapping command.
+  // Manual settings reads are not marked as automatic background work.
+  reset();esphome::ble_client::Parent yp4;EyeOpenClient y4(false);y4.p=&yp4;ready(y4);
+  y4.request("READ FUNCTION");tick(y4,250);event(y4,ESP_GATTC_WRITE_CHAR_EVT,106);
+  const auto manual_writes=writes.size();event(y4,ESP_GATTC_NOTIFY_EVT,42,"Opening");tick(y4,0);
+  assert(writes.size()==manual_writes);tick(y4,600);
+  event(y4,ESP_GATTC_READ_CHAR_EVT,106,base);
+  assert(settings_result.state=="Configuration read and validated");
+
   // Automatic post-connect refresh is read-only and follows confirmed status.
   reset(); esphome::ble_client::Parent p22; EyeOpenClient c22; c22.p=&p22; ready(c22);
-  tick(c22,500); assert(writes.back().payload=="C=READ FUNCTION;src=P9999999");
+  const auto before_due_settings=writes.size();tick(c22,249);assert(writes.size()==before_due_settings);
+  tick(c22,1); assert(writes.size()==before_due_settings+1 && writes.back().payload=="C=READ FUNCTION;src=P9999999");
   acknowledge(c22,base); assert(setting_1.state=="Overcurrent" && setting_9.state=="Function OFF");
   assert(settings_write_count()==0);
   // Automatic settings refresh repeats after five minutes, defers until fresh
@@ -595,7 +755,7 @@ int main() {
   // Once a background read completes, a queued movement need not wait on
   // unrelated-reply rereads. Never interrupt an outstanding GATT operation.
   reset();esphome::ble_client::Parent p29;EyeOpenClient c29(false);c29.p=&p29;ready(c29);
-  tick(c29,1000);const auto queued_count=writes.size();c29.request("FULL OPEN");
+  tick(c29,10000);const auto queued_count=writes.size();c29.request("FULL OPEN");
   assert(writes.size()==queued_count);
   acknowledge(c29,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==queued_count+1 && writes.back().payload=="C=FULL OPEN;src=P9999999");
@@ -608,7 +768,7 @@ int main() {
   for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
   // A lock change is still honoured on the faster unrelated-read handoff.
   reset();esphome::ble_client::Parent p31;EyeOpenClient c31(false);c31.p=&p31;ready(c31);
-  tick(c31,1000);c31.request("PED OPEN");gate_lock_state.state="locked";
+  tick(c31,10000);c31.request("PED OPEN");gate_lock_state.state="locked";
   acknowledge(c31,"ERROR:READ LIGHT STATUS");
   for(const auto&w:writes)assert(w.payload!="C=PED OPEN;src=P9999999");
   // A lost motion ACK must not stall telemetry for ten reads then reconnect.
@@ -638,7 +798,7 @@ int main() {
   // A C004 event during a stale-reply wait immediately refreshes READ STATUS,
   // once per transaction. It never issues another motion or overlapping read.
   reset();esphome::ble_client::Parent p34;EyeOpenClient c34(false);c34.p=&p34;ready(c34);
-  tick(c34,1000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c34,0);
+  tick(c34,10000);event(c34,ESP_GATTC_WRITE_CHAR_EVT,106);
   const auto stale_writes=writes.size(),stale_reads=reads.size();
   event(c34,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
   assert(writes.size()==stale_writes+1 && reads.size()==stale_reads);
@@ -656,7 +816,7 @@ int main() {
   assert(writes.size()==backed_off_writes+1 && writes.back().payload=="C=READ STATUS;src=P9999999");
   // If a read is in flight, refresh only after its mismatching result arrives.
   reset();esphome::ble_client::Parent p35;EyeOpenClient c35(false);c35.p=&p35;ready(c35);
-  tick(c35,1000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);
+  tick(c35,10000);event(c35,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c35,200);
   const auto inflight_writes=writes.size(),inflight_reads=reads.size();
   event(c35,ESP_GATTC_NOTIFY_EVT,42,"PedOpening;src=fixture");tick(c35,0);
   assert(writes.size()==inflight_writes && reads.size()==inflight_reads);
@@ -667,15 +827,14 @@ int main() {
   assert(ped_cover.current_operation==esphome::cover::COVER_OPERATION_OPENING);
   assert(p35.disconnections==0);
   // No notification is needed for fresh status recovery. Refresh immediately
-  // after the completed stale read, but keep the normal 200ms response wait.
+  // after the completed stale read, but keep the zero added response wait.
   reset();esphome::ble_client::Parent p36;EyeOpenClient c36(false);c36.p=&p36;ready(c36);
-  tick(c36,1000);const auto original_writes=writes.size();
+  tick(c36,10000);const auto original_writes=writes.size();
   acknowledge(c36,"ERROR:READ LIGHT STATUS");
   assert(writes.size()==original_writes+1);
   const auto before_refresh_read=reads.size();tick(c36,0);
   assert(reads.size()==before_refresh_read); // No read while GATT write is outstanding.
-  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,199);assert(reads.size()==before_refresh_read);
-  tick(c36,1);assert(reads.size()==before_refresh_read+1);
+  event(c36,ESP_GATTC_WRITE_CHAR_EVT,106);tick(c36,0);assert(reads.size()==before_refresh_read+1);
   event(c36,ESP_GATTC_READ_CHAR_EVT,106,"ERROR:READ STATUS");
   assert(writes.size()==original_writes+2);
   event(c36,ESP_GATTC_NOTIFY_EVT,42,"Opening;src=fixture");
@@ -685,5 +844,17 @@ int main() {
   tick(c36,1);assert(writes.size()==exhausted+1); // Existing failure backoff retained.
   acknowledge(c36,"ACK STATUS:PED CLOSED,0");assert(poll_health.state=="Status reply received");
   for(const auto&w:writes)assert(w.payload=="C=READ STATUS;src=P9999999");
+  // Link evidence survives reconnects and stays bounded to four events. Logs
+  // expose operation category, not a full command/settings/credential payload.
+  reset();esphome::ble_client::Parent diagnostic_parent;EyeOpenClient diagnostic(false);diagnostic.p=&diagnostic_parent;
+  ready(diagnostic);
+  for(int reason=1;reason<=6;++reason) {
+    esp_ble_gattc_cb_param_t closed;closed.close.reason=reason;
+    diagnostic.gattc_event_handler(ESP_GATTC_CLOSE_EVT,1,&closed);clock_ms+=1000;
+  }
+  log_lines.clear();diagnostic.dump_link_diagnostics();
+  assert(log_lines.size()==5 && log_lines[0].find("events=4")!=std::string::npos);
+  for(int i=0;i<4;++i) assert(log_lines[i+1].find("reason="+std::to_string(i+3))!=std::string::npos);
+  for(const auto &line:log_lines) assert(line.find("P9999999")==std::string::npos);
   puts("Protocol, native cover, bounded fresh status recovery and guarded settings checks passed (mock Bluetooth/hash). ");
 }

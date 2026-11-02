@@ -43,7 +43,18 @@ controller percentage, not an independently measured leaf angle; it becomes
 Unknown on Bluetooth loss or after 25 seconds without a valid status reply.
 Shared UART reply mismatches refresh READ STATUS immediately after the completed
 GATT read, with two refreshes maximum per transaction (shared with notification
-recovery). The 200ms first-read wait remains. Exhausted transactions retry after
+recovery). Status reads request the reply immediately after confirmed GATT write
+completion, without an added first-read wait. Debug logs under `gate_timing` record the write, wait,
+read and total durations plus whether the reply matched the expected acknowledgement;
+a matching reply alone does not prove freshness. A developer-only constructor
+option enables paired-read auditing: the early result is withheld, a second read
+starts no earlier than 200ms after write completion, and only that later result
+enters feedback. This diagnostic changes transaction duration and is disabled
+by default; a difference may reflect legitimate movement rather than staleness.
+The audit-only third constructor argument selects an early-read wait from
+0–200ms. It has no effect when auditing is disabled, so diagnostic
+trials do not change normal zero-delay operation.
+Exhausted transactions retry after
 1, 2, then 5 seconds without tearing down a healthy
 Bluetooth link. Actual transport failures still disconnect; no motion command
 is automatically retried. A connected Bluetooth link alone does not guarantee
@@ -99,11 +110,21 @@ when diagnosing contention.
 
 ## Polling and movement feedback
 
-Closed idle polling waits 1 second after each reply. While open, unsynchronized,
-or within 30 seconds of a controller event/command, it waits 150 ms instead.
+Experimental listening-first mode waits 10 seconds between health reads while
+freshly confirmed Closed. A notification or a local movement command wakes status
+reads immediately. While open or unsynchronized, each completed reply allows the
+next transaction without an added scheduling delay. Confirmed closure returns to
+listening immediately, without a post-movement fast window. A missed notification
+can delay movement detection until the next health read; notification coverage for
+all opening sources is still under validation. Feedback still expires after 25s.
+While a transition candidate awaits confirmation, the previous 150 ms gap is
+retained: reducing that gap can bring the next reply inside the unchanged
+500 ms confirmation window and unnecessarily require another sample.
 These are scheduling delays, not guaranteed update rates: GATT/UART response
 latency and bounded mismatch recovery add time. Only one transaction is in flight.
 A notification prompts a fresh status read; it never directly establishes state.
+Due background settings reads take priority at the Closed-idle boundary so
+faster status polling cannot starve automatic configuration refreshes.
 If a notification arrives while a status transaction is waiting on unrelated
 reply content, the bridge can submit a fresh READ STATUS after the outstanding
 GATT operation completes. A new event also leaves idle mismatch backoff promptly. This refresh shares the transaction budget and never repeats a movement command.
@@ -112,6 +133,12 @@ than restarting its timer; stable Closed still requires fresh revalidation.
 A matching Opening/PedOpening event can also retain a pending OPENING sample
 received within 1.5 seconds. It never publishes a mode by itself: another fresh,
 progressing read is required, and conflicting hints reset confirmation.
+If status has already confirmed physical Open without an access mode, the same
+1.5-second opening context may accept a delayed mode notification. The gate must
+have started from a fresh synchronized Closed baseline; another solicited OPENING
+reply must progress beyond the latest position observed before the notification.
+The event neither changes Gate state nor renews its freshness. Expired context,
+reversal, conflicting mode hints, other movement phases and disconnect reject it.
 A fresh confirmed Gate state is retained while notifications or new candidate
 samples are checked, instead of flashing Unknown during each transition. These
 checks never extend the 25-second freshness timeout. Configuration writes stay
@@ -180,7 +207,16 @@ exhausted configuration-read attempt is scheduled again after 30 seconds, with
 the same confirmed-Closed/idle guard. No monitoring switch or manual refresh button is
 published to Home Assistant. **Settings update result** explains validation,
 rejected edits and uncertain outcomes. Settings retain their last validated
-values during loss of feedback; they are not a continuous settings stream. The original 18 read-only sensor entities are replaced by
+values during loss of feedback; they are not a continuous settings stream.
+
+Automatic background refreshes yield to controller notifications, queued movement
+commands, or movement-status content encountered in a shared reply. An outstanding
+GATT write/read finishes first; no further configuration reread is started. Status
+polling resumes and configuration is reconsidered after 30 seconds, once Closed
+is confirmed. Manual reads, active setting saves and uncertain-save verification
+are not discarded by this background scheduling rule.
+
+The original 18 read-only sensor entities are replaced by
 `select.*` entities with the same names; Auto-closing keeps its existing select.
 Update any consumers of the old `sensor.*` settings entities during migration.
 Covers, Gate state, Bluetooth connection and unrelated entity IDs are unchanged.
@@ -290,3 +326,25 @@ bridge retains the healthy link and resumes status reads. The outcome remains
 explicitly uncertain; no movement is replayed. A failed GATT operation still
 uses transport-failure handling. This avoids an eight-second telemetry stall
 and reconnect quarantine solely because another client overwrote the ACK.
+
+### Retained link diagnostics
+
+Gate position appears with the normal sensors. Bluetooth signal strength is a
+diagnostic sensor reporting the connected controller's RSSI in dBm every 20
+seconds. It becomes Unknown when the Bluetooth link closes; Wi-Fi signal
+strength is separate and remains disabled by default.
+
+The bridge keeps the last four transport failures/disconnect reasons in RAM and
+repeats them in DEBUG logs once per minute, with event age, protocol phase and
+operation category. They are not Home Assistant entities and contain no PIN or
+command payload. This bounded buffer survives Bluetooth reconnects, but not an
+ESP32 restart. A log capture opened after a dropout can therefore recover its
+reason without continuously streaming logs. It is diagnostic evidence, not an
+automatic inference of the root cause.
+
+### Home Assistant publication batching
+
+Native API state updates use a 20ms batching delay instead of the 100ms default.
+This reduces the configured publication wait without changing Bluetooth polling
+or feedback confirmation. It uses more network packets; the configured reduction
+is not a measured end-to-end latency guarantee.

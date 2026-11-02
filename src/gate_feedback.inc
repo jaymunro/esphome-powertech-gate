@@ -21,17 +21,24 @@ class GateFeedback {
   void disconnected() { linked_ = false; synced_ = false; invalidate(); mode_.clear(); last_phase_.clear(); hint_pending_=false; position_=-1; baseline_armed_=false; clear_event_hint(); }
   void event(uint32_t now, const std::string &payload="") {
     const auto label=payload.substr(0,payload.find(';'));
+    if(label=="Stopped" || label=="Closing" || label=="PedClosing" ||
+       label=="Opened" || label=="PedOpened" || label=="Closed" || label=="PedClosed")
+      recent_opening_=false;
     if(label.empty() || label=="Opening" || label=="PedOpening" || label=="Opened" ||
        label=="PedOpened" || label=="Stopped") clear_closing_track();
     const std::string event_mode=label=="Opening" ? "car" :
         (label=="PedOpening" && profile_.supports_pedestrian ? "pedestrian" : "");
+    const bool late_mode = recent_opening_ && physical_=="open" && mode_.empty() &&
+        sample_phase_=="OPENING" && uint32_t(now-recent_opening_at_)<=1500 &&
+        uint32_t(now-last_sample_)<=1500;
     if(profile_.opening_event_mode_hint && !event_mode.empty()) {
       if((!event_mode_.empty() && event_mode_!=event_mode) ||
          (hint_pending_ && uint32_t(now-hint_at_)<8000 && hint_mode_!=event_mode)) {
         event_conflict_=true; event_mode_.clear(); hint_pending_=false;
       } else if(!event_conflict_ && event_mode_.empty() && linked_ && synced_ && valid_ &&
-                baseline_armed_ && physical_=="closed" && uint32_t(now-last_status_)<=25000 &&
-                (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) {
+                uint32_t(now-last_status_)<=25000 &&
+                ((baseline_armed_ && physical_=="closed" &&
+                  (sample_phase_=="CLOSED" || sample_phase_=="OPENING")) || late_mode)) {
         event_mode_=event_mode; event_at_=now;
       }
     }
@@ -41,6 +48,13 @@ class GateFeedback {
     // that recent candidate forward, but publish nothing until another fresh,
     // progressing read confirms it. Conflicting/old events cannot reuse it.
     bool opening_candidate=false;
+    if(late_mode && !event_mode.empty() && !event_conflict_ && event_mode_==event_mode) {
+      // Physical Open is already known. A delayed hint can classify this recent
+      // transition only after a new read progresses beyond the latest position.
+      // Preserve candidate age and physical freshness; the event publishes neither.
+      candidate_="open:"+event_mode; candidate_position_=position_;
+      pending_=true; opening_candidate=true;
+    }
     if(pending_ && !event_mode.empty() && !event_conflict_ && event_mode_==event_mode &&
        sample_phase_=="OPENING" && uint32_t(now-last_sample_)<=1500 &&
        uint32_t(now-candidate_at_)<=1500 &&
@@ -73,6 +87,16 @@ class GateFeedback {
         (!synced_ && uint32_t(now-last_event_) < 3000)) return false;
     const auto word = s.text.substr(s.text.find_last_of(' ')+1);
     sample_phase_=word;
+    if(recent_opening_ && word=="OPENING" && s.position<recent_opening_position_) {
+      event_mode_.clear(); event_conflict_=true; recent_opening_=false;
+    }
+    if(word!="OPENING" || (recent_opening_ && uint32_t(now-recent_opening_at_)>1500))
+      recent_opening_=false;
+    if(word=="OPENING" && !recent_opening_ && baseline_armed_ && valid_ &&
+       physical_=="closed" && uint32_t(now-last_status_)<=25000) {
+      recent_opening_=true; recent_opening_at_=now;
+    }
+    if(recent_opening_) recent_opening_position_=s.position;
     const bool closed = word == "CLOSED" && std::abs(s.position - profile_.closed_position) <= profile_.closed_position_tolerance;
     // A contradictory CLOSED position must never become fresh Open feedback.
     if (word == "CLOSED" && !closed) { invalidate(); return false; }
@@ -122,7 +146,7 @@ class GateFeedback {
     if (!closed && !next_mode.empty()) hint_pending_=false;
     physical_ = closed ? "closed" : "open";
     baseline_armed_=closed;
-    if(!closed && !next_mode.empty()) event_mode_.clear();
+    if(!closed && !next_mode.empty()) { event_mode_.clear(); recent_opening_=false; }
     car_ = pedestrian_ = "unavailable";
     if (closed) car_ = pedestrian_ = "closed";
     else if (mode_ == "car" || mode_ == "pedestrian") {
@@ -136,6 +160,7 @@ class GateFeedback {
   }
   int position() const { return position_; }
   bool available() const { return valid_; }
+  bool confirming() const { return pending_ && !candidate_.empty(); }
   bool confirmed_closed() const { return valid_ && !pending_ && physical_=="closed"; }
   const std::string &gate() const { return physical_; }
   const std::string &car() const { return car_; }
@@ -184,7 +209,8 @@ class GateFeedback {
   uint32_t hint_at_{0}; bool hint_pending_{false};
   std::string event_mode_,sample_phase_;
   uint32_t event_at_{0}; int candidate_position_{-1};
-  bool baseline_armed_{false},event_conflict_{false};
+  bool baseline_armed_{false},event_conflict_{false},recent_opening_{false};
+  uint32_t recent_opening_at_{0}; int recent_opening_position_{-1};
   bool closing_seen_{false},closing_progress_{false};
   uint32_t closing_first_at_{0},closing_last_at_{0};
   int closing_first_position_{-1},closing_last_position_{-1};
@@ -193,5 +219,5 @@ class GateFeedback {
   bool linked_{false},valid_{false},synced_{false},pending_{true};
   uint32_t connected_at_{0},last_event_{0},candidate_at_{0},last_status_{0};
   std::string candidate_,mode_,physical_{"unavailable"},car_{"unavailable"},pedestrian_{"unavailable"};
-  void invalidate() { valid_=false; pending_=true; candidate_.clear(); clear_closing_track(); physical_=car_=pedestrian_="unavailable"; }
+  void invalidate() { recent_opening_=false; valid_=false; pending_=true; candidate_.clear(); clear_closing_track(); physical_=car_=pedestrian_="unavailable"; }
 };
