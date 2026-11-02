@@ -336,3 +336,10 @@ command payload. This bounded buffer survives Bluetooth reconnects, but not an
 ESP32 restart. A log capture opened after a dropout can therefore recover its
 reason without continuously streaming logs. It is diagnostic evidence, not an
 automatic inference of the root cause.
+
+### Home Assistant publication batching
+
+Native API state updates use a 20ms batching delay instead of the 100ms default.
+This reduces the configured publication wait without changing Bluetooth polling
+or feedback confirmation. It uses more network packets; the configured reduction
+is not a measured end-to-end latency guarantee.

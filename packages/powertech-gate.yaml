@@ -18,7 +18,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.22"
+    version: "0.9.0-alpha.23"
   on_boot:
     priority: -100
     then:
@@ -1176,6 +1176,7 @@ logger:
     text_sensor: WARN
 
 api:
+  batch_delay: 20ms
   encryption:
     key: !secret gate_api_key
 
