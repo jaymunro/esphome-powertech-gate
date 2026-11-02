@@ -17,7 +17,7 @@ esphome:
   min_version: 2026.10.1
   project:
     name: powertech.eyeopen_gate
-    version: "0.9.0-alpha.23"
+    version: "0.9.0-alpha.24"
   on_boot:
     priority: -100
     then:
@@ -340,6 +340,13 @@ sensor:
     accuracy_decimals: 0
     unit_of_measurement: "%"
     icon: mdi:gate
+
+  - platform: ble_client
+    type: rssi
+    ble_client_id: gate_ble
+    name: Bluetooth signal strength
+    id: gate_ble_signal_strength
+    update_interval: 20s
     entity_category: diagnostic
 
   - platform: template

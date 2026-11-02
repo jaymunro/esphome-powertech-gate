@@ -329,6 +329,11 @@ and reconnect quarantine solely because another client overwrote the ACK.
 
 ### Retained link diagnostics
 
+Gate position appears with the normal sensors. Bluetooth signal strength is a
+diagnostic sensor reporting the connected controller's RSSI in dBm every 20
+seconds. It becomes Unknown when the Bluetooth link closes; Wi-Fi signal
+strength is separate and remains disabled by default.
+
 The bridge keeps the last four transport failures/disconnect reasons in RAM and
 repeats them in DEBUG logs once per minute, with event age, protocol phase and
 operation category. They are not Home Assistant entities and contain no PIN or
